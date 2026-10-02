@@ -29,6 +29,27 @@ class NoteStore(private val ctx: Context) {
             prefs.edit().putString(KEY_TREE, value?.toString()).apply()
         }
 
+    /** Lines of preview on the home screen: 0 (title only) to 3. */
+    var previewLines: Int
+        get() = prefs.getInt(KEY_PREVIEW, 2)
+        set(value) {
+            prefs.edit().putInt(KEY_PREVIEW, value.coerceIn(0, 3)).apply()
+        }
+
+    /** Note text size: 0 small, 1 normal, 2 large, 3 extra large. */
+    var fontLevel: Int
+        get() = prefs.getInt(KEY_FONT, 1)
+        set(value) {
+            prefs.edit().putInt(KEY_FONT, value.coerceIn(0, 3)).apply()
+        }
+
+    fun fontScale(): Float = when (fontLevel) {
+        0 -> 0.875f
+        2 -> 1.15f
+        3 -> 1.3f
+        else -> 1f
+    }
+
     private val localDir: File
         get() = File(ctx.filesDir, "notes").apply { mkdirs() }
 
@@ -137,13 +158,15 @@ class NoteStore(private val ctx: Context) {
         val preview = body.lineSequence()
             .map { it.trim() }
             .filter { it.isNotEmpty() }
-            .take(2)
-            .joinToString("  ")
+            .take(3)
+            .joinToString("\n")
         return Note(id, title.ifBlank { name.removeSuffix(MD) }, preview, modified)
     }
 
     companion object {
         private const val KEY_TREE = "tree_uri"
+        private const val KEY_PREVIEW = "preview_lines"
+        private const val KEY_FONT = "font_level"
         private const val MD = ".md"
         private const val CONTENT = "content://"
 
