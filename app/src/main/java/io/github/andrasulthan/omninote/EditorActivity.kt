@@ -46,6 +46,7 @@ class EditorActivity : Activity() {
     private lateinit var p: Ui.Palette
     private lateinit var titleView: EditText
     private lateinit var metaView: TextView
+    private lateinit var conflictBar: LinearLayout
     private lateinit var bodyView: EditText
     private lateinit var readScroll: ScrollView
     private lateinit var readView: TextView
@@ -124,6 +125,13 @@ class EditorActivity : Activity() {
             letterSpacing = 0.05f
             setPadding(0, small / 2, 0, small)
             visibility = View.GONE
+        }
+
+        conflictBar = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setPadding(small, small, small, small / 2)
+            background = Ui.rounded(p.surface, Ui.RED, Ui.dp(context, 12f).toFloat(), Ui.dp(context, 1f))
         }
 
         val line = View(this).apply { setBackgroundColor(p.border) }
@@ -211,6 +219,9 @@ class EditorActivity : Activity() {
         root.addView(bar)
         root.addView(titleView)
         root.addView(metaView)
+        root.addView(conflictBar, LinearLayout.LayoutParams(match, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            bottomMargin = small
+        })
         root.addView(line, LinearLayout.LayoutParams(match, Ui.dp(this, 1f)))
         root.addView(bodyView, LinearLayout.LayoutParams(match, 0, 1f))
         root.addView(readScroll, LinearLayout.LayoutParams(match, 0, 1f))
@@ -263,6 +274,7 @@ class EditorActivity : Activity() {
             return
         }
         folder = store.folderOf(id)
+        if (NoteStore.isConflictName(store.fileNameOf(id))) showConflictBar()
         if (!Vault.isLocked(raw)) {
             showPlain(raw)
             return
@@ -310,6 +322,11 @@ class EditorActivity : Activity() {
     private fun buildText(): String =
         NoteMeta.build(meta, NoteStore.join(titleView.text.toString(), bodyView.text.toString()))
 
+    private fun historyKey(id: String): String = History.keyFor(id, meta)
+
+    /** Turns note text into what is written to the file (encrypted for locked notes). */
+    private fun fileTextFor(plain: String): String = if (locked) Vault.seal(plain) else plain
+
     private fun save() {
         val title = titleView.text.toString()
         val body = bodyView.text.toString()
@@ -330,8 +347,16 @@ class EditorActivity : Activity() {
             return
         }
         try {
-            val fileText = if (locked) Vault.seal(plain) else plain
-            val id = store.save(noteId, title, fileText, folder)
+            val existing = noteId
+            if (existing != null) {
+                val previous = try {
+                    store.read(existing)
+                } catch (e: Exception) {
+                    ""
+                }
+                History.record(this, historyKey(existing), previous)
+            }
+            val id = store.save(noteId, title, fileTextFor(plain), folder)
             noteId = id
             savedText = plain
             if (!locked && Reminders.isPinned(this, id)) {
@@ -393,6 +418,159 @@ class EditorActivity : Activity() {
         meta = change(meta)
         updateMetaLine()
         save()
+    }
+
+    // ---------- Version history ----------
+
+    private fun showHistory() {
+        save()
+        val id = noteId ?: return
+        val versions = History.versions(this, historyKey(id))
+        if (versions.isEmpty()) {
+            Toast.makeText(this, R.string.history_empty, Toast.LENGTH_LONG).show()
+            return
+        }
+        val labels = versions.map {
+            DateUtils.formatDateTime(
+                this, it.time,
+                DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_SHOW_TIME or
+                    DateUtils.FORMAT_SHOW_YEAR or DateUtils.FORMAT_ABBREV_MONTH
+            ) + "  ·  " + DateUtils.getRelativeTimeSpanString(it.time)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.history)
+            .setItems(labels.toTypedArray()) { _, which -> previewVersion(versions[which], labels[which]) }
+            .show()
+    }
+
+    private fun previewVersion(version: History.Version, label: String) {
+        val plain = try {
+            val raw = History.read(version)
+            if (Vault.isLocked(raw)) Vault.unseal(raw) else raw
+        } catch (e: Exception) {
+            Toast.makeText(this, R.string.error_open, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val text = Ui.text(this, 13f, p.text).apply {
+            this.text = NoteMeta.parse(plain).second.take(4000)
+            setLineSpacing(0f, 1.2f)
+            val pad = Ui.dp(context, 20f)
+            setPadding(pad, pad / 2, pad, pad / 2)
+            setTextIsSelectable(true)
+        }
+        val scroll = ScrollView(this).apply { addView(text) }
+        AlertDialog.Builder(this)
+            .setTitle(label)
+            .setView(scroll)
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton(R.string.history_restore) { _, _ ->
+                save()
+                showPlain(plain)
+                savedText = ""
+                save()
+                Toast.makeText(this, R.string.history_restored, Toast.LENGTH_SHORT).show()
+            }
+            .show()
+    }
+
+    // ---------- Sync conflicts ----------
+
+    private fun showConflictBar() {
+        conflictBar.removeAllViews()
+        conflictBar.addView(Ui.text(this, 12f, Ui.RED).apply {
+            text = getString(R.string.conflict_banner)
+            setLineSpacing(0f, 1.2f)
+        })
+        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun action(label: Int, run: () -> Unit) {
+            actions.addView(Ui.text(this, 11f, p.text, bold = true).apply {
+                text = getString(label).uppercase()
+                letterSpacing = 0.06f
+                val h = Ui.dp(context, 8f)
+                setPadding(0, h, h * 2, h)
+                setOnClickListener { run() }
+            })
+        }
+        action(R.string.conflict_keep_this) { keepThisVersion() }
+        action(R.string.conflict_keep_original) { keepOriginal() }
+        action(R.string.conflict_merge) { mergeWithOriginal() }
+        action(R.string.conflict_open_original) { openOriginal() }
+        conflictBar.addView(HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(actions)
+        })
+        conflictBar.visibility = View.VISIBLE
+    }
+
+    private fun originalNote(): Note? {
+        val id = noteId ?: return null
+        val found = try {
+            store.findOriginal(id)
+        } catch (e: Exception) {
+            null
+        }
+        if (found == null) Toast.makeText(this, R.string.conflict_no_original, Toast.LENGTH_LONG).show()
+        return found
+    }
+
+    private fun finishConflict(openId: String?) {
+        val conflictId = noteId ?: return
+        try {
+            store.deleteForever(conflictId)
+        } catch (e: Exception) {
+            Toast.makeText(this, R.string.error_save, Toast.LENGTH_LONG).show()
+            return
+        }
+        deleted = true
+        Toast.makeText(this, R.string.conflict_resolved, Toast.LENGTH_SHORT).show()
+        if (openId != null) {
+            startActivity(Intent(this, EditorActivity::class.java).putExtra(EXTRA_ID, openId))
+        }
+        finish()
+    }
+
+    private fun keepThisVersion() {
+        val original = originalNote() ?: return
+        try {
+            History.record(this, History.keyFor(original.id, original.meta), store.read(original.id))
+            store.save(original.id, "", fileTextFor(buildText()))
+        } catch (e: Exception) {
+            Toast.makeText(this, R.string.error_save, Toast.LENGTH_LONG).show()
+            return
+        }
+        finishConflict(original.id)
+    }
+
+    private fun keepOriginal() {
+        val original = originalNote() ?: return
+        finishConflict(original.id)
+    }
+
+    private fun mergeWithOriginal() {
+        val original = originalNote() ?: return
+        try {
+            val raw = store.read(original.id)
+            val originalPlain = if (Vault.isLocked(raw)) Vault.unseal(raw) else raw
+            val (originalMeta, originalContent) = NoteMeta.parse(originalPlain)
+            val extra = "\n\n---\n\n## " + getString(R.string.conflict_merged_heading) + "\n\n" +
+                bodyView.text.toString().trim() + "\n"
+            val merged = NoteMeta.build(
+                originalMeta.copy(tags = (originalMeta.tags + meta.tags).distinctBy { it.lowercase() }),
+                originalContent.trimEnd() + extra
+            )
+            History.record(this, History.keyFor(original.id, originalMeta), raw)
+            store.save(original.id, "", fileTextFor(merged))
+        } catch (e: Exception) {
+            Toast.makeText(this, R.string.error_save, Toast.LENGTH_LONG).show()
+            return
+        }
+        finishConflict(original.id)
+    }
+
+    private fun openOriginal() {
+        val original = originalNote() ?: return
+        save()
+        startActivity(Intent(this, EditorActivity::class.java).putExtra(EXTRA_ID, original.id))
     }
 
     // ---------- Vault ----------
@@ -650,7 +828,7 @@ class EditorActivity : Activity() {
         val current = titleView.text.toString().trim()
         val titles = try {
             store.list()
-                .filter { !it.meta.vault }
+                .filter { !it.meta.vault && !it.isConflict }
                 .map { it.title }
                 .filter { !it.equals(current, ignoreCase = true) }
         } catch (e: Exception) {
@@ -684,10 +862,11 @@ class EditorActivity : Activity() {
         menu.add(0, M_MOVE, 6, R.string.move)
         menu.add(0, M_ARCHIVE, 7, if (meta.archived) R.string.unarchive else R.string.archive)
         menu.add(0, M_LOCK, 8, if (locked) R.string.unlock_note else R.string.lock_note)
-        menu.add(0, M_CHECKED, 9, R.string.checked_to_bottom)
-        menu.add(0, M_SHARE, 10, R.string.share)
-        menu.add(0, M_TOC, 11, R.string.toc)
-        menu.add(0, M_DELETE, 12, R.string.delete)
+        menu.add(0, M_HISTORY, 9, R.string.history)
+        menu.add(0, M_CHECKED, 10, R.string.checked_to_bottom)
+        menu.add(0, M_SHARE, 11, R.string.share)
+        menu.add(0, M_TOC, 12, R.string.toc)
+        menu.add(0, M_DELETE, 13, R.string.delete)
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 M_PIN -> changeMeta { it.copy(pinned = !it.pinned) }
@@ -699,6 +878,7 @@ class EditorActivity : Activity() {
                 M_MOVE -> chooseNotebook()
                 M_ARCHIVE -> changeMeta { it.copy(archived = !it.archived) }
                 M_LOCK -> if (locked) removeLock() else lockNote()
+                M_HISTORY -> showHistory()
                 M_CHECKED -> checkedToBottom()
                 M_SHARE -> share()
                 M_TOC -> showToc()
@@ -1000,10 +1180,11 @@ class EditorActivity : Activity() {
         private const val M_MOVE = 7
         private const val M_ARCHIVE = 8
         private const val M_LOCK = 9
-        private const val M_CHECKED = 10
-        private const val M_SHARE = 11
-        private const val M_TOC = 12
-        private const val M_DELETE = 13
+        private const val M_HISTORY = 10
+        private const val M_CHECKED = 11
+        private const val M_SHARE = 12
+        private const val M_TOC = 13
+        private const val M_DELETE = 14
         private val WORD = Regex("\\S+")
         private val TOC_HEADING = Regex("^(#{1,6})\\s+(.*)")
         private val TASK_BOX = Regex("^(\\s*[-*+]\\s\\[)([ xX])(]\\s)")
