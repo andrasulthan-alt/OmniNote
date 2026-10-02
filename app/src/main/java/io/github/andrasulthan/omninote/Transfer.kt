@@ -288,6 +288,7 @@ object Transfer {
         val root = currentRoot(ctx)
         val texts = ArrayList<Pair<String, String>>()
         val images = HashMap<String, String>()
+        val drawingData = HashMap<String, ByteArray>()
         ZipInputStream(input).use { zip ->
             var entry = zip.nextEntry
             while (entry != null) {
@@ -299,6 +300,7 @@ object Transfer {
                     when {
                         junk -> Unit
                         rel == ".omninote/vault.txt" -> if (!root.exists(rel)) root.write(rel, zip)
+                        ext == "json" && name.startsWith("drawing-") -> drawingData[name] = zip.readBytes()
                         ext in IMAGE_EXT -> {
                             val safe = name.replace(Regex("[\\s()\\[\\]]+"), "-")
                             val target = root.freePath("attachments/$safe", "-", "")
@@ -312,6 +314,11 @@ object Transfer {
                 zip.closeEntry()
                 entry = zip.nextEntry
             }
+        }
+        // Stroke data of drawings goes next to the image it belongs to, even if that image was renamed.
+        for ((name, bytes) in drawingData) {
+            val png = images[name.removeSuffix(".json") + ".png"] ?: continue
+            root.write(DrawActivity.jsonFor(png), bytes.inputStream())
         }
         var count = 0
         for ((rel, text) in texts) {
