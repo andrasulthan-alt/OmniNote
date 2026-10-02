@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Gambar tangan -->
+    <string name="tool_draw">Gambar</string>
+    <string name="draw_title">GAMBAR</string>
+    <string name="draw_save">SIMPAN</string>
+    <string name="draw_close">Tutup</string>
+    <string name="draw_discard">Buang perubahan pada gambar ini?</string>
+    <string name="draw_discard_yes">Buang</string>
+    <string name="draw_white">Tinta putih</string>
+    <string name="draw_red">Tinta merah</string>
+    <string name="draw_grey">Tinta abu-abu</string>
+    <string name="draw_size">Ukuran pena</string>
+    <string name="draw_eraser">HAPUS</string>
+    <string name="draw_undo">Urungkan</string>
+    <string name="draw_redo">Ulangi</string>
+    <string name="draw_clear">Bersihkan</string>
+    <string name="draw_clear_confirm">Bersihkan seluruh gambar?</string>
+    <string name="draw_empty">Gambar sesuatu dulu.</string>
+    <string name="draw_error">Gambar tidak bisa disimpan.</string>
+    <string name="draw_edit">Edit gambar…</string>
+    <string name="draw_pick">Pilih gambar</string>
+</resources>
