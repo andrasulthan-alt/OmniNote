@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Import and export -->
+    <string name="menu_import">Import…</string>
+    <string name="menu_export_all">Export all notes (ZIP)…</string>
+    <string name="menu_backup">Automatic backup…</string>
+    <string name="import_working">Importing…</string>
+    <string name="import_done">Notes imported: %1$d</string>
+    <string name="import_none">No notes were found in the chosen files.</string>
+    <string name="import_failed">Could not import these files.</string>
+    <string name="export_working">Exporting…</string>
+    <string name="export_done">Export finished</string>
+    <string name="export_failed">Could not export the notes.</string>
+
+    <!-- Export one note -->
+    <string name="export_note">Export…</string>
+    <string name="export_md">Markdown file (.md)</string>
+    <string name="export_html">Web page (.html)</string>
+    <string name="export_pdf">PDF (print, then Save as PDF)</string>
+    <string name="export_saved">Saved</string>
+
+    <!-- Automatic backup -->
+    <string name="backup_title">Automatic backup</string>
+    <string name="backup_off_desc">Keep a daily ZIP backup of all your notes in a folder you choose. A backup is made when OmniNote is opened and the last one is more than a day old. The 7 newest backups are kept.</string>
+    <string name="backup_on_desc">Folder: %1$s\nLast backup: %2$s\n\nA backup is made once a day when OmniNote is opened. The 7 newest backups are kept.</string>
+    <string name="backup_never">never</string>
+    <string name="backup_choose">Choose folder</string>
+    <string name="backup_change">Change folder</string>
+    <string name="backup_now">Back up now</string>
+    <string name="backup_turn_off">Turn off</string>
+    <string name="backup_done">Backup saved</string>
+    <string name="backup_failed">Backup failed</string>
+
+    <!-- Copy notes to a new folder -->
+    <string name="copy_notes_title">Copy your notes?</string>
+    <string name="copy_notes_msg">There are %1$d notes in the previous location. Copy them to the new location? The originals stay where they are.</string>
+    <string name="copy_notes_yes">Copy</string>
+    <string name="copy_notes_no">Don\'t copy</string>
+    <string name="copy_done">Files copied: %1$d</string>
+</resources>
