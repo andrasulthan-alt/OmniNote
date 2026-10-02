@@ -58,6 +58,7 @@ class EditorActivity : Activity() {
     private var savedText = ""
     private var deleted = false
     private var reading = false
+    private var locked = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -220,17 +221,7 @@ class EditorActivity : Activity() {
 
         val existing = noteId
         if (existing != null) {
-            try {
-                val (m, content) = NoteMeta.parse(store.read(existing))
-                val (title, body) = NoteStore.split(content)
-                meta = m
-                folder = store.folderOf(existing)
-                titleView.setText(title)
-                bodyView.setText(body)
-                savedText = buildText()
-            } catch (e: Exception) {
-                Toast.makeText(this, R.string.error_open, Toast.LENGTH_LONG).show()
-            }
+            loadExisting(existing)
         } else {
             meta = NoteMeta(created = System.currentTimeMillis(), color = store.defaultColor)
             when {
@@ -244,9 +235,9 @@ class EditorActivity : Activity() {
                 }
                 else -> titleView.requestFocus()
             }
+            updateCount()
+            updateMetaLine()
         }
-        updateCount()
-        updateMetaLine()
     }
 
     override fun onPause() {
@@ -259,6 +250,61 @@ class EditorActivity : Activity() {
         outState.putString(KEY_ID, noteId)
     }
 
+    // ---------- Loading ----------
+
+    private fun loadExisting(id: String) {
+        val raw = try {
+            store.read(id)
+        } catch (e: Exception) {
+            null
+        }
+        if (raw == null) {
+            Toast.makeText(this, R.string.error_open, Toast.LENGTH_LONG).show()
+            return
+        }
+        folder = store.folderOf(id)
+        if (!Vault.isLocked(raw)) {
+            showPlain(raw)
+            return
+        }
+        locked = true
+        setEditable(false)
+        val reveal = {
+            try {
+                showPlain(Vault.unseal(raw))
+                setEditable(true)
+            } catch (e: Exception) {
+                Toast.makeText(this, R.string.error_open, Toast.LENGTH_LONG).show()
+                finish()
+            }
+        }
+        when {
+            Vault.isOpen() -> reveal()
+            Vault.isSetUp(store) -> VaultUi.open(this, store, onCancel = { finish() }) { reveal() }
+            else -> {
+                Toast.makeText(this, R.string.error_open, Toast.LENGTH_LONG).show()
+                finish()
+            }
+        }
+    }
+
+    private fun showPlain(text: String) {
+        val (m, content) = NoteMeta.parse(text)
+        val (title, body) = NoteStore.split(content)
+        meta = m
+        titleView.setText(title)
+        bodyView.setText(body)
+        savedText = buildText()
+        updateCount()
+        updateMetaLine()
+    }
+
+    private fun setEditable(on: Boolean) {
+        titleView.isEnabled = on
+        bodyView.isEnabled = on
+        toolArea.visibility = if (on && !reading) View.VISIBLE else View.GONE
+    }
+
     // ---------- Saving ----------
 
     private fun buildText(): String =
@@ -267,11 +313,11 @@ class EditorActivity : Activity() {
     private fun save() {
         val title = titleView.text.toString()
         val body = bodyView.text.toString()
-        val text = buildText()
-        if (text == savedText) return
+        val plain = buildText()
+        if (plain == savedText) return
         if (noteId == null && title.isBlank() && body.isBlank()) return
         val isNew = noteId == null
-        if (isNew && title.isNotBlank()) {
+        if (isNew && !locked && title.isNotBlank()) {
             val clash = try {
                 store.findByTitle(title) != null
             } catch (e: Exception) {
@@ -279,15 +325,20 @@ class EditorActivity : Activity() {
             }
             if (clash) Toast.makeText(this, R.string.duplicate_title, Toast.LENGTH_SHORT).show()
         }
+        if (locked && !Vault.isOpen()) {
+            Toast.makeText(this, R.string.vault_closed, Toast.LENGTH_LONG).show()
+            return
+        }
         try {
-            val id = store.save(noteId, title, text, folder)
+            val fileText = if (locked) Vault.seal(plain) else plain
+            val id = store.save(noteId, title, fileText, folder)
             noteId = id
-            savedText = text
-            if (Reminders.isPinned(this, id)) {
+            savedText = plain
+            if (!locked && Reminders.isPinned(this, id)) {
                 Reminders.pinNotification(this, id, title.ifBlank { getString(R.string.app_name) }, previewText())
             }
         } catch (e: Exception) {
-            keepDraft(text)
+            if (!locked) keepDraft(plain)
             Toast.makeText(this, R.string.error_save, Toast.LENGTH_LONG).show()
         }
     }
@@ -311,7 +362,7 @@ class EditorActivity : Activity() {
         countView.text = getString(R.string.word_count, words, body.length)
     }
 
-    /** Small line under the title: colour, reminder, notebook, tags and pinned or archived state. */
+    /** Small line under the title: lock, colour, reminder, notebook, tags and state. */
     private fun updateMetaLine() {
         val out = SpannableStringBuilder()
         val colour = NoteMeta.colorValue(meta.color)
@@ -320,6 +371,7 @@ class EditorActivity : Activity() {
             out.setSpan(ForegroundColorSpan(colour), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
         val parts = ArrayList<String>()
+        if (locked) parts.add("🔒 " + getString(R.string.locked_note).uppercase())
         if (meta.remind > System.currentTimeMillis()) parts.add("⏰ " + formatTime(meta.remind))
         if (meta.pinned) parts.add(getString(R.string.pinned).uppercase())
         if (meta.archived) parts.add(getString(R.string.filter_archive).uppercase())
@@ -341,6 +393,38 @@ class EditorActivity : Activity() {
         meta = change(meta)
         updateMetaLine()
         save()
+    }
+
+    // ---------- Vault ----------
+
+    private fun lockNote() {
+        VaultUi.ensureOpen(this, store) {
+            save()
+            val id = noteId
+            if (id == null) {
+                Toast.makeText(this, R.string.error_save, Toast.LENGTH_SHORT).show()
+                return@ensureOpen
+            }
+            locked = true
+            savedText = ""
+            save()
+            val renamed = store.rename(id, Vault.lockedTitle())
+            followNewId(id, renamed)
+            noteId = renamed
+            Reminders.unpinNotification(this, renamed)
+            updateMetaLine()
+        }
+    }
+
+    private fun removeLock() {
+        locked = false
+        savedText = ""
+        save()
+        val id = noteId ?: return
+        val renamed = store.rename(id, titleView.text.toString().ifBlank { "Note" })
+        followNewId(id, renamed)
+        noteId = renamed
+        updateMetaLine()
     }
 
     // ---------- Reminders and notifications ----------
@@ -373,9 +457,13 @@ class EditorActivity : Activity() {
         }
         changeMeta { it.copy(remind = at) }
         val id = noteId ?: return
-        Reminders.schedule(this, id, titleView.text.toString().ifBlank { getString(R.string.app_name) }, at)
+        Reminders.schedule(this, id, reminderTitle(), at)
         Toast.makeText(this, getString(R.string.remind_set, formatTime(at)), Toast.LENGTH_LONG).show()
     }
+
+    private fun reminderTitle(): String =
+        if (locked) getString(R.string.locked_note)
+        else titleView.text.toString().ifBlank { getString(R.string.app_name) }
 
     private fun removeReminder() {
         changeMeta { it.copy(remind = 0L) }
@@ -387,7 +475,7 @@ class EditorActivity : Activity() {
         val id = noteId ?: return
         if (Reminders.isPinned(this, id)) {
             Reminders.unpinNotification(this, id)
-        } else {
+        } else if (!locked) {
             askNotificationPermission()
             Reminders.pinNotification(this, id, titleView.text.toString().ifBlank { getString(R.string.app_name) }, previewText())
         }
@@ -396,14 +484,15 @@ class EditorActivity : Activity() {
     /** Keeps reminders and notifications working after a note gets a new id. */
     private fun followNewId(oldId: String, newId: String) {
         if (oldId == newId) return
-        val title = titleView.text.toString().ifBlank { getString(R.string.app_name) }
         if (meta.remind > System.currentTimeMillis()) {
             Reminders.cancel(this, oldId)
-            Reminders.schedule(this, newId, title, meta.remind)
+            Reminders.schedule(this, newId, reminderTitle(), meta.remind)
         }
         if (Reminders.isPinned(this, oldId)) {
             Reminders.unpinNotification(this, oldId)
-            Reminders.pinNotification(this, newId, title, previewText())
+            if (!locked) {
+                Reminders.pinNotification(this, newId, titleView.text.toString().ifBlank { getString(R.string.app_name) }, previewText())
+            }
         }
     }
 
@@ -560,7 +649,10 @@ class EditorActivity : Activity() {
     private fun pickNoteLink() {
         val current = titleView.text.toString().trim()
         val titles = try {
-            store.list().map { it.title }.filter { !it.equals(current, ignoreCase = true) }
+            store.list()
+                .filter { !it.meta.vault }
+                .map { it.title }
+                .filter { !it.equals(current, ignoreCase = true) }
         } catch (e: Exception) {
             emptyList()
         }
@@ -583,16 +675,19 @@ class EditorActivity : Activity() {
         menu.add(0, M_PIN, 0, if (meta.pinned) R.string.unpin else R.string.pin)
         menu.add(0, M_REMIND, 1, R.string.remind)
         if (meta.remind > 0) menu.add(0, M_REMIND_OFF, 2, R.string.remind_remove)
-        menu.add(0, M_NOTIFY, 3,
-            if (id != null && Reminders.isPinned(this, id)) R.string.notify_unpin else R.string.notify_pin)
+        if (!locked) {
+            menu.add(0, M_NOTIFY, 3,
+                if (id != null && Reminders.isPinned(this, id)) R.string.notify_unpin else R.string.notify_pin)
+        }
         menu.add(0, M_COLOR, 4, R.string.color)
         menu.add(0, M_TAGS, 5, R.string.tags)
         menu.add(0, M_MOVE, 6, R.string.move)
         menu.add(0, M_ARCHIVE, 7, if (meta.archived) R.string.unarchive else R.string.archive)
-        menu.add(0, M_CHECKED, 8, R.string.checked_to_bottom)
-        menu.add(0, M_SHARE, 9, R.string.share)
-        menu.add(0, M_TOC, 10, R.string.toc)
-        menu.add(0, M_DELETE, 11, R.string.delete)
+        menu.add(0, M_LOCK, 8, if (locked) R.string.unlock_note else R.string.lock_note)
+        menu.add(0, M_CHECKED, 9, R.string.checked_to_bottom)
+        menu.add(0, M_SHARE, 10, R.string.share)
+        menu.add(0, M_TOC, 11, R.string.toc)
+        menu.add(0, M_DELETE, 12, R.string.delete)
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 M_PIN -> changeMeta { it.copy(pinned = !it.pinned) }
@@ -603,6 +698,7 @@ class EditorActivity : Activity() {
                 M_TAGS -> editTags()
                 M_MOVE -> chooseNotebook()
                 M_ARCHIVE -> changeMeta { it.copy(archived = !it.archived) }
+                M_LOCK -> if (locked) removeLock() else lockNote()
                 M_CHECKED -> checkedToBottom()
                 M_SHARE -> share()
                 M_TOC -> showToc()
@@ -903,10 +999,11 @@ class EditorActivity : Activity() {
         private const val M_TAGS = 6
         private const val M_MOVE = 7
         private const val M_ARCHIVE = 8
-        private const val M_CHECKED = 9
-        private const val M_SHARE = 10
-        private const val M_TOC = 11
-        private const val M_DELETE = 12
+        private const val M_LOCK = 9
+        private const val M_CHECKED = 10
+        private const val M_SHARE = 11
+        private const val M_TOC = 12
+        private const val M_DELETE = 13
         private val WORD = Regex("\\S+")
         private val TOC_HEADING = Regex("^(#{1,6})\\s+(.*)")
         private val TASK_BOX = Regex("^(\\s*[-*+]\\s\\[)([ xX])(]\\s)")
