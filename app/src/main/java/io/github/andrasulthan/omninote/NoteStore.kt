@@ -25,7 +25,8 @@ data class Note(
 /**
  * Notes are plain Markdown files, either in app storage or in a folder the user
  * picks (so tools like Syncthing or Obsidian can read them too).
- * Notebooks are sub-folders, deleted notes go to ".trash", images to "attachments".
+ * Notebooks are sub-folders, deleted notes go to ".trash", images to "attachments",
+ * and shared settings (like the vault check) to ".omninote".
  */
 class NoteStore(private val ctx: Context) {
 
@@ -98,7 +99,7 @@ class NoteStore(private val ctx: Context) {
     fun listTrash(): List<Note> = collect(trash = true)
 
     fun findByTitle(title: String): Note? =
-        list().firstOrNull { it.title.equals(title.trim(), ignoreCase = true) }
+        list().firstOrNull { !it.meta.vault && it.title.equals(title.trim(), ignoreCase = true) }
 
     fun allTags(): List<String> =
         list().flatMap { it.meta.tags }.distinct().sortedWith(String.CASE_INSENSITIVE_ORDER)
@@ -250,6 +251,59 @@ class NoteStore(private val ctx: Context) {
         } else {
             File(id).writeText(text)
         }
+    }
+
+    /** Renames a note file to match a title and returns its new id. */
+    fun rename(id: String, title: String): String {
+        val name = fileNameFor(title)
+        if (!id.startsWith(CONTENT)) {
+            val src = File(id)
+            val parent = src.parentFile ?: return id
+            if (src.name == name) return id
+            val dest = uniqueFile(parent, name)
+            return if (src.renameTo(dest)) dest.absolutePath else id
+        }
+        return try {
+            DocumentsContract.renameDocument(ctx.contentResolver, Uri.parse(id), name)?.toString() ?: id
+        } catch (e: Exception) {
+            id
+        }
+    }
+
+    // ---------- Hidden settings files (shared through sync) ----------
+
+    fun readHidden(name: String): String? {
+        val tree = treeUri
+        if (tree == null) {
+            val f = File(File(localDir, HIDDEN), name)
+            return if (f.exists()) f.readText() else null
+        }
+        val dirId = folderDocId(tree, HIDDEN, create = false) ?: return null
+        val doc = children(tree, dirId).firstOrNull { !it.isDir && it.name == name } ?: return null
+        return read(DocumentsContract.buildDocumentUriUsingTree(tree, doc.id).toString())
+    }
+
+    fun writeHidden(name: String, text: String) {
+        val tree = treeUri
+        if (tree == null) {
+            val dir = File(localDir, HIDDEN).apply { mkdirs() }
+            File(dir, name).writeText(text)
+            return
+        }
+        val dirId = folderDocId(tree, HIDDEN, create = true)
+            ?: throw IllegalStateException("No settings folder")
+        val existing = children(tree, dirId).firstOrNull { !it.isDir && it.name == name }
+        val uri = if (existing != null) {
+            DocumentsContract.buildDocumentUriUsingTree(tree, existing.id)
+        } else {
+            DocumentsContract.createDocument(
+                ctx.contentResolver,
+                DocumentsContract.buildDocumentUriUsingTree(tree, dirId),
+                "application/octet-stream",
+                name
+            ) ?: throw IllegalStateException("Cannot create $name")
+        }
+        write(uri.toString(), text)
     }
 
     // ---------- Notebooks, trash and moving ----------
@@ -478,6 +532,7 @@ class NoteStore(private val ctx: Context) {
 
     private fun toNote(id: String, name: String, text: String, modified: Long, folder: String): Note {
         val (meta, content) = NoteMeta.parse(text)
+        if (meta.vault) return Note(id, "", "", modified, folder, meta, "")
         val (title, body) = split(content)
         val preview = body.lineSequence()
             .map { it.trim() }
@@ -497,6 +552,7 @@ class NoteStore(private val ctx: Context) {
         private const val MD = ".md"
         private const val CONTENT = "content://"
         private const val ATTACH = "attachments"
+        private const val HIDDEN = ".omninote"
         const val TRASH = ".trash"
         private const val MAX_DEPTH = 8
 
