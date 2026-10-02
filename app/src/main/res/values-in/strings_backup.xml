@@ -8,6 +8,7 @@
     <string name="import_done">Catatan diimpor: %1$d</string>
     <string name="import_none">Tidak ada catatan di berkas yang dipilih.</string>
     <string name="import_failed">Berkas ini tidak bisa diimpor.</string>
+    <string name="import_scarlet_image">🖼 Gambar dari Scarlet Notes (tidak ada di berkas cadangannya)</string>
     <string name="export_working">Sedang mengekspor…</string>
     <string name="export_done">Ekspor selesai</string>
     <string name="export_failed">Catatan tidak bisa diekspor.</string>
