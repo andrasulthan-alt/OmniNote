@@ -16,6 +16,8 @@ import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.text.Editable
 import android.text.InputType
 import android.text.SpannableStringBuilder
@@ -42,6 +44,8 @@ import java.util.Calendar
 /** Writes, reads and edits one note. Saves automatically when the screen is left. */
 class EditorActivity : Activity() {
 
+    private class Snap(val text: String, val cursor: Int)
+
     private lateinit var store: NoteStore
     private lateinit var p: Ui.Palette
     private lateinit var titleView: EditText
@@ -52,6 +56,8 @@ class EditorActivity : Activity() {
     private lateinit var readView: TextView
     private lateinit var toolArea: LinearLayout
     private lateinit var modeButton: TextView
+    private lateinit var undoButton: TextView
+    private lateinit var redoButton: TextView
     private lateinit var countView: TextView
     private var noteId: String? = null
     private var meta = NoteMeta()
@@ -61,6 +67,14 @@ class EditorActivity : Activity() {
     private var reading = false
     private var locked = false
     private var editingDrawing = false
+
+    // Undo and redo for the note text. Typing is grouped into bursts.
+    private val undoStack = ArrayList<Snap>()
+    private val redoStack = ArrayList<Snap>()
+    private var restoring = false
+    private var typingBurst = false
+    private val handler = Handler(Looper.getMainLooper())
+    private val endBurst = Runnable { typingBurst = false }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -80,7 +94,7 @@ class EditorActivity : Activity() {
             setPadding(pad, Ui.dp(context, 8f), pad, 0)
         }
 
-        // Top bar: back, read/edit switch, more menu
+        // Top bar: back, undo, redo, read/edit switch, more menu
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -90,6 +104,18 @@ class EditorActivity : Activity() {
             contentDescription = getString(R.string.back)
             setPadding(0, pad / 2, pad, pad / 2)
             setOnClickListener { finish() }
+        }
+        undoButton = Ui.text(this, 20f, p.text).apply {
+            text = "↶"
+            contentDescription = getString(R.string.draw_undo)
+            setPadding(pad / 2, pad / 2, pad / 2, pad / 2)
+            setOnClickListener { undo() }
+        }
+        redoButton = Ui.text(this, 20f, p.text).apply {
+            text = "↷"
+            contentDescription = getString(R.string.draw_redo)
+            setPadding(pad / 2, pad / 2, pad / 2, pad / 2)
+            setOnClickListener { redo() }
         }
         modeButton = Ui.text(this, 13f, p.text).apply {
             text = getString(R.string.mode_read).uppercase()
@@ -105,6 +131,8 @@ class EditorActivity : Activity() {
         }
         bar.addView(back)
         bar.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        bar.addView(undoButton)
+        bar.addView(redoButton)
         bar.addView(modeButton)
         bar.addView(more)
 
@@ -158,13 +186,23 @@ class EditorActivity : Activity() {
             imeOptions = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
             setLineSpacing(0f, 1.25f)
             addTextChangedListener(object : TextWatcher {
-                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
+                    if (!restoring && !typingBurst) {
+                        pushUndo(Snap(s?.toString() ?: "", selectionStart.coerceAtLeast(0)))
+                        typingBurst = true
+                    }
+                }
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
                 override fun afterTextChanged(s: Editable?) {
                     if (s != null) {
                         Markdown.styleEditable(s, p)
                         updateCount()
                     }
+                    if (!restoring) {
+                        handler.removeCallbacks(endBurst)
+                        handler.postDelayed(endBurst, BURST_MS)
+                    }
+                    updateUndoButtons()
                 }
             })
         }
@@ -237,6 +275,7 @@ class EditorActivity : Activity() {
             loadExisting(existing)
         } else {
             meta = NoteMeta(created = System.currentTimeMillis(), color = store.defaultColor)
+            restoring = true
             when {
                 intent.action == Intent.ACTION_SEND -> {
                     titleView.setText(intent.getStringExtra(Intent.EXTRA_SUBJECT) ?: "")
@@ -253,9 +292,12 @@ class EditorActivity : Activity() {
                 }
                 else -> titleView.requestFocus()
             }
+            restoring = false
+            clearUndo()
             updateCount()
             updateMetaLine()
         }
+        updateUndoButtons()
     }
 
     override fun onPause() {
@@ -263,9 +305,63 @@ class EditorActivity : Activity() {
         if (!deleted) save()
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        handler.removeCallbacks(endBurst)
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putString(KEY_ID, noteId)
+    }
+
+    // ---------- Undo and redo ----------
+
+    private fun pushUndo(snap: Snap) {
+        undoStack.add(snap)
+        if (undoStack.size > MAX_UNDO) undoStack.removeAt(0)
+        redoStack.clear()
+    }
+
+    private fun currentSnap(): Snap =
+        Snap(bodyView.text.toString(), bodyView.selectionStart.coerceAtLeast(0))
+
+    private fun undo() {
+        if (undoStack.isEmpty()) return
+        handler.removeCallbacks(endBurst)
+        typingBurst = false
+        redoStack.add(currentSnap())
+        restoreSnap(undoStack.removeAt(undoStack.size - 1))
+    }
+
+    private fun redo() {
+        if (redoStack.isEmpty()) return
+        handler.removeCallbacks(endBurst)
+        typingBurst = false
+        undoStack.add(currentSnap())
+        restoreSnap(redoStack.removeAt(redoStack.size - 1))
+    }
+
+    private fun restoreSnap(snap: Snap) {
+        restoring = true
+        bodyView.setText(snap.text)
+        bodyView.setSelection(snap.cursor.coerceIn(0, bodyView.text.length))
+        restoring = false
+        if (reading) showRead()
+        updateUndoButtons()
+    }
+
+    private fun clearUndo() {
+        undoStack.clear()
+        redoStack.clear()
+        typingBurst = false
+        updateUndoButtons()
+    }
+
+    private fun updateUndoButtons() {
+        if (!::undoButton.isInitialized) return
+        undoButton.alpha = if (undoStack.isEmpty()) 0.3f else 1f
+        redoButton.alpha = if (redoStack.isEmpty()) 0.3f else 1f
     }
 
     // ---------- Loading ----------
@@ -311,8 +407,11 @@ class EditorActivity : Activity() {
         val (m, content) = NoteMeta.parse(text)
         val (title, body) = NoteStore.split(content)
         meta = m
+        restoring = true
         titleView.setText(title)
         bodyView.setText(body)
+        restoring = false
+        clearUndo()
         savedText = buildText()
         updateCount()
         updateMetaLine()
@@ -792,6 +891,7 @@ class EditorActivity : Activity() {
                 i++
             }
         }
+        typingBurst = false
         bodyView.setText(out.joinToString("\n"))
         if (reading) showRead()
     }
@@ -837,6 +937,7 @@ class EditorActivity : Activity() {
         val m = TASK_BOX.find(line) ?: return
         val flipped = if (m.groupValues[2] == " ") "x" else " "
         lines[lineIndex] = m.groupValues[1] + flipped + m.groupValues[3] + line.substring(m.value.length)
+        typingBurst = false
         bodyView.setText(lines.joinToString("\n"))
         if (reading) showRead()
     }
@@ -1311,6 +1412,8 @@ class EditorActivity : Activity() {
         private const val M_DELETE = 14
         private const val M_EXPORT = 15
         private const val M_DRAW = 16
+        private const val MAX_UNDO = 100
+        private const val BURST_MS = 700L
         private val WORD = Regex("\\S+")
         private val TOC_HEADING = Regex("^(#{1,6})\\s+(.*)")
         private val TASK_BOX = Regex("^(\\s*[-*+]\\s\\[)([ xX])(]\\s)")
