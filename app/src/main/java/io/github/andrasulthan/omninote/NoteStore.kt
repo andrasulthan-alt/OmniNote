@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import java.io.File
+import java.io.InputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -18,6 +19,7 @@ data class Note(
 /**
  * Notes are plain Markdown files, either in app storage or in a folder the user
  * picks (so tools like Syncthing or Obsidian can read them too).
+ * Images live in an "attachments" folder next to the notes.
  */
 class NoteStore(private val ctx: Context) {
 
@@ -100,6 +102,10 @@ class NoteStore(private val ctx: Context) {
         return notes.sortedByDescending { it.modified }
     }
 
+    /** Finds a note by its title (used by [[note links]]). */
+    fun findByTitle(title: String): Note? =
+        list().firstOrNull { it.title.equals(title.trim(), ignoreCase = true) }
+
     fun read(id: String): String {
         return if (id.startsWith(CONTENT)) {
             ctx.contentResolver.openInputStream(Uri.parse(id))?.use {
@@ -131,6 +137,81 @@ class NoteStore(private val ctx: Context) {
             File(id).delete()
         }
     }
+
+    // ---------- Attachments ----------
+
+    /** Copies an image into the attachments folder and returns its relative path. */
+    fun saveAttachment(source: Uri): String {
+        val mime = ctx.contentResolver.getType(source) ?: "image/jpeg"
+        val ext = when {
+            mime.endsWith("png") -> "png"
+            mime.endsWith("webp") -> "webp"
+            mime.endsWith("gif") -> "gif"
+            else -> "jpg"
+        }
+        val name = "img-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) + "." + ext
+        val input = ctx.contentResolver.openInputStream(source)
+            ?: throw IllegalStateException("Cannot read image")
+        input.use { inp ->
+            val tree = treeUri
+            if (tree == null) {
+                val dir = File(localDir, ATTACH).apply { mkdirs() }
+                File(dir, name).outputStream().use { inp.copyTo(it) }
+            } else {
+                val dirUri = attachmentDir(tree, create = true)
+                    ?: throw IllegalStateException("No attachments folder")
+                val file = DocumentsContract.createDocument(
+                    ctx.contentResolver, dirUri, "application/octet-stream", name
+                ) ?: throw IllegalStateException("Cannot create $name")
+                ctx.contentResolver.openOutputStream(file, "w")?.use { inp.copyTo(it) }
+            }
+        }
+        return "$ATTACH/$name"
+    }
+
+    fun openAttachment(path: String): InputStream? {
+        val name = path.substringAfterLast('/')
+        if (name.isBlank() || name.contains("..")) return null
+        val tree = treeUri
+        if (tree == null) {
+            val f = File(File(localDir, ATTACH), name)
+            return if (f.exists()) f.inputStream() else null
+        }
+        val dir = attachmentDir(tree, create = false) ?: return null
+        val doc = findChild(tree, DocumentsContract.getDocumentId(dir), name) ?: return null
+        return ctx.contentResolver.openInputStream(doc)
+    }
+
+    private fun attachmentDir(tree: Uri, create: Boolean): Uri? {
+        val rootId = DocumentsContract.getTreeDocumentId(tree)
+        findChild(tree, rootId, ATTACH)?.let { return it }
+        if (!create) return null
+        val parent = DocumentsContract.buildDocumentUriUsingTree(tree, rootId)
+        return DocumentsContract.createDocument(
+            ctx.contentResolver, parent, DocumentsContract.Document.MIME_TYPE_DIR, ATTACH
+        )
+    }
+
+    private fun findChild(tree: Uri, parentId: String, name: String): Uri? {
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId)
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME
+        )
+        val cursor = ctx.contentResolver.query(children, projection, null, null, null) ?: return null
+        try {
+            while (cursor.moveToNext()) {
+                if (cursor.getString(1) == name) {
+                    return DocumentsContract.buildDocumentUriUsingTree(tree, cursor.getString(0))
+                }
+            }
+        } finally {
+            cursor.close()
+        }
+        return null
+    }
+
+    // ---------- Helpers ----------
 
     private fun create(name: String): String {
         val tree = treeUri
@@ -169,6 +250,7 @@ class NoteStore(private val ctx: Context) {
         private const val KEY_FONT = "font_level"
         private const val MD = ".md"
         private const val CONTENT = "content://"
+        private const val ATTACH = "attachments"
 
         /** Splits "# Title" on the first line from the rest of the note. */
         fun split(text: String): Pair<String, String> {
