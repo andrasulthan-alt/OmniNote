@@ -23,6 +23,7 @@
     <string name="menu_tasks">Tasks</string>
     <string name="menu_app_lock">App lock…</string>
     <string name="menu_vault">Vault…</string>
+    <string name="menu_sync">Sync…</string>
     <string name="empty">No notes yet.\nTap + to write one.</string>
     <string name="empty_filtered">No notes here.</string>
 
@@ -30,6 +31,7 @@
     <string name="filter_all">All</string>
     <string name="filter_archive">Archive</string>
     <string name="filter_trash">Trash</string>
+    <string name="filter_conflicts">Conflicts</string>
     <string name="pinned">Pinned</string>
 
     <!-- Sort -->
@@ -117,6 +119,31 @@
     <string name="unlock_note">Remove lock</string>
     <string name="locked_note">Locked note</string>
     <string name="locked_open_hint">Enter the vault password to open this note.</string>
+
+    <!-- Version history -->
+    <string name="history">Version history…</string>
+    <string name="history_empty">No older versions yet. A version is kept every time the note changes, at most every 2 minutes.</string>
+    <string name="history_restore">Restore this version</string>
+    <string name="history_restored">Version restored</string>
+
+    <!-- Sync conflicts -->
+    <string name="conflict_label">Conflict</string>
+    <string name="conflict_banner">This is a sync conflict copy: the note changed on two devices. Choose what to keep.</string>
+    <string name="conflict_keep_this">Keep this version</string>
+    <string name="conflict_keep_original">Keep the original</string>
+    <string name="conflict_merge">Merge both</string>
+    <string name="conflict_open_original">Open the original</string>
+    <string name="conflict_no_original">The original note was not found.</string>
+    <string name="conflict_resolved">Conflict resolved</string>
+    <string name="conflict_merged_heading">From the other device</string>
+
+    <!-- Sync guide -->
+    <string name="sync_title">Sync with Syncthing</string>
+    <string name="sync_steps">1. Install Syncthing on each device (Syncthing-Fork on Android).\n\n2. In OmniNote, choose a notes folder, for example Documents/OmniNote.\n\n3. In Syncthing, share that same folder with your other devices.\n\n4. OmniNote refreshes by itself when Syncthing brings changes. If a note changed on two devices, it appears under the Conflicts filter.</string>
+    <string name="sync_internal_warning">Your notes are stored inside OmniNote right now, where Syncthing cannot reach them. Choose a notes folder first.</string>
+    <string name="sync_choose_folder">Choose folder</string>
+    <string name="sync_open">Open Syncthing</string>
+    <string name="sync_get">Get Syncthing</string>
 
     <!-- Trash and selection -->
     <string name="restore">Restore</string>
