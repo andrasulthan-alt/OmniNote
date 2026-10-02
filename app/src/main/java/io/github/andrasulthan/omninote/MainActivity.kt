@@ -8,6 +8,7 @@ import android.content.SharedPreferences
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Bundle
@@ -33,12 +34,16 @@ import android.widget.TextView
 import android.widget.Toast
 import java.util.concurrent.Executors
 
-/** Home screen: filters, search, note cards, new-note button and settings menu. */
+/** Home screen: filters, search, note cards, multi-select, new-note button and settings menu. */
 class MainActivity : Activity() {
 
     private lateinit var store: NoteStore
     private lateinit var p: Ui.Palette
     private lateinit var prefs: SharedPreferences
+    private lateinit var header: LinearLayout
+    private lateinit var selectionBar: LinearLayout
+    private lateinit var selectionCount: TextView
+    private lateinit var selectionActions: LinearLayout
     private lateinit var folderLabel: TextView
     private lateinit var emptyView: TextView
     private lateinit var grid: GridView
@@ -55,6 +60,7 @@ class MainActivity : Activity() {
     private var notebooks: List<String> = emptyList()
     private var filter = FILTER_ALL
     private var query = ""
+    private val selected = LinkedHashSet<String>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -64,6 +70,7 @@ class MainActivity : Activity() {
         filter = savedInstanceState?.getString(KEY_FILTER) ?: FILTER_ALL
         val pad = Ui.dp(this, 20f)
         val small = Ui.dp(this, 8f)
+        val iconSize = Ui.dp(this, 44f)
 
         val frame = FrameLayout(this).apply { setBackgroundColor(p.bg) }
         val column = LinearLayout(this).apply {
@@ -72,7 +79,7 @@ class MainActivity : Activity() {
         }
 
         // Header: OMNINOTE ● ... search  more
-        val header = LinearLayout(this).apply {
+        header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
@@ -81,7 +88,6 @@ class MainActivity : Activity() {
             letterSpacing = 0.12f
         }
         val dotSize = Ui.dp(this, 8f)
-        val iconSize = Ui.dp(this, 44f)
         val searchIcon = SearchIcon(this, p.text).apply {
             contentDescription = getString(R.string.search)
             setOnClickListener { toggleSearch() }
@@ -100,13 +106,36 @@ class MainActivity : Activity() {
         header.addView(searchIcon, LinearLayout.LayoutParams(iconSize, iconSize))
         header.addView(more, LinearLayout.LayoutParams(iconSize, iconSize))
 
+        // Selection bar: ✕  3 selected  [actions...]
+        selectionCount = Ui.text(this, 15f, p.text, bold = true).apply {
+            setPadding(small, 0, small, 0)
+        }
+        selectionActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val close = Ui.text(this, 20f, p.text).apply {
+            text = "✕"
+            gravity = Gravity.CENTER
+            contentDescription = getString(R.string.close_selection)
+            setOnClickListener { exitSelection() }
+        }
+        selectionBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            addView(close, LinearLayout.LayoutParams(iconSize, iconSize))
+            addView(selectionCount)
+            addView(HorizontalScrollView(context).apply {
+                isHorizontalScrollBarEnabled = false
+                addView(selectionActions)
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        }
+
         // Search box with recent searches
         searchBox = EditText(this).apply {
             hint = getString(R.string.search_hint)
             setHintTextColor(p.muted)
             setTextColor(p.text)
             textSize = 15f
-            typeface = android.graphics.Typeface.MONOSPACE
+            typeface = Typeface.MONOSPACE
             background = Ui.rounded(p.surface, p.border, Ui.dp(context, 14f).toFloat(), Ui.dp(context, 1f))
             setPadding(pad * 3 / 4, small + 4, pad * 3 / 4, small + 4)
             setSingleLine(true)
@@ -166,10 +195,11 @@ class MainActivity : Activity() {
             setPadding(0, 0, 0, Ui.dp(context, 96f))
             adapter = notesAdapter
             onItemClickListener = AdapterView.OnItemClickListener { _, _, position, _ ->
-                open(notesAdapter.getItem(position).id)
+                val note = notesAdapter.getItem(position)
+                if (selected.isNotEmpty()) toggleSelected(note) else open(note.id)
             }
             onItemLongClickListener = AdapterView.OnItemLongClickListener { _, _, position, _ ->
-                quickActions(notesAdapter.getItem(position))
+                toggleSelected(notesAdapter.getItem(position))
                 true
             }
         }
@@ -185,6 +215,7 @@ class MainActivity : Activity() {
         body.addView(emptyView, FrameLayout.LayoutParams(MATCH, MATCH))
 
         column.addView(header)
+        column.addView(selectionBar)
         column.addView(searchArea)
         column.addView(folderLabel)
         column.addView(chipScroll)
@@ -223,6 +254,16 @@ class MainActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putString(KEY_FILTER, filter)
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (selected.isNotEmpty()) {
+            exitSelection()
+        } else {
+            @Suppress("DEPRECATION")
+            super.onBackPressed()
+        }
     }
 
     // ---------- Loading and filtering ----------
@@ -297,6 +338,9 @@ class MainActivity : Activity() {
 
     private fun applyFilter() {
         notesAdapter.items = visibleNotes()
+        val visibleIds = notesAdapter.items.map { it.id }.toSet()
+        selected.retainAll(visibleIds)
+        updateSelectionBar()
         notesAdapter.notifyDataSetChanged()
         val nothingAtAll = allNotes.isEmpty() && trashNotes.isEmpty()
         emptyView.text = getString(if (nothingAtAll) R.string.empty else R.string.empty_filtered)
@@ -325,19 +369,20 @@ class MainActivity : Activity() {
     }
 
     private fun addChip(label: String, key: String, count: Int) {
-        val selected = key == filter
-        val chip = Ui.text(this, 13f, if (selected) p.bg else p.text).apply {
+        val isOn = key == filter
+        val chip = Ui.text(this, 13f, if (isOn) p.bg else p.text).apply {
             text = "$label  $count"
             val h = Ui.dp(context, 14f)
             val v = Ui.dp(context, 8f)
             setPadding(h, v, h, v)
             background = Ui.rounded(
-                if (selected) p.text else Color.TRANSPARENT,
-                if (selected) p.text else p.border,
+                if (isOn) p.text else Color.TRANSPARENT,
+                if (isOn) p.text else p.border,
                 Ui.dp(context, 20f).toFloat(),
                 Ui.dp(context, 1f)
             )
             setOnClickListener {
+                selected.clear()
                 filter = key
                 buildChips()
                 applyFilter()
@@ -346,6 +391,183 @@ class MainActivity : Activity() {
         chipRow.addView(chip, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
         ).apply { marginEnd = Ui.dp(this@MainActivity, 8f) })
+    }
+
+    // ---------- Multi-select ----------
+
+    private fun toggleSelected(note: Note) {
+        if (!selected.remove(note.id)) selected.add(note.id)
+        updateSelectionBar()
+        notesAdapter.notifyDataSetChanged()
+    }
+
+    private fun exitSelection() {
+        selected.clear()
+        updateSelectionBar()
+        notesAdapter.notifyDataSetChanged()
+    }
+
+    private fun selectedNotes(): List<Note> =
+        notesAdapter.items.filter { it.id in selected }
+
+    private fun updateSelectionBar() {
+        val selecting = selected.isNotEmpty()
+        header.visibility = if (selecting) View.GONE else View.VISIBLE
+        selectionBar.visibility = if (selecting) View.VISIBLE else View.GONE
+        if (!selecting) return
+        selectionCount.text = getString(R.string.selected_count, selected.size)
+        selectionActions.removeAllViews()
+        if (filter == FILTER_TRASH) {
+            addAction(R.string.select_all) { selectAll() }
+            addAction(R.string.restore) { restoreSelected() }
+            addAction(R.string.delete_forever) { deleteSelectedForever() }
+        } else {
+            val notes = selectedNotes()
+            addAction(R.string.select_all) { selectAll() }
+            addAction(if (notes.any { !it.meta.pinned }) R.string.pin else R.string.unpin) { pinSelected() }
+            addAction(R.string.add_tags) { tagSelected() }
+            addAction(R.string.move) { moveSelected() }
+            addAction(if (notes.any { !it.meta.archived }) R.string.archive else R.string.unarchive) {
+                archiveSelected()
+            }
+            addAction(R.string.merge) { mergeSelected() }
+            addAction(R.string.delete) { deleteSelected() }
+        }
+    }
+
+    private fun addAction(label: Int, action: () -> Unit) {
+        val button = Ui.text(this, 12f, p.text, bold = true).apply {
+            text = getString(label).removeSuffix("…").uppercase()
+            letterSpacing = 0.08f
+            gravity = Gravity.CENTER
+            val h = Ui.dp(context, 10f)
+            setPadding(h, h, h, h)
+            setOnClickListener { action() }
+        }
+        selectionActions.addView(button)
+    }
+
+    private fun selectAll() {
+        selected.addAll(notesAdapter.items.map { it.id })
+        updateSelectionBar()
+        notesAdapter.notifyDataSetChanged()
+    }
+
+    private fun finishBulk(work: (List<Note>) -> Unit) {
+        val notes = selectedNotes()
+        if (notes.isEmpty()) return
+        selected.clear()
+        updateSelectionBar()
+        runThenReload { work(notes) }
+    }
+
+    private fun pinSelected() {
+        val pin = selectedNotes().any { !it.meta.pinned }
+        finishBulk { notes -> notes.forEach { n -> store.updateMeta(n.id) { it.copy(pinned = pin) } } }
+    }
+
+    private fun archiveSelected() {
+        val archive = selectedNotes().any { !it.meta.archived }
+        finishBulk { notes -> notes.forEach { n -> store.updateMeta(n.id) { it.copy(archived = archive) } } }
+    }
+
+    private fun tagSelected() {
+        val input = EditText(this).apply {
+            hint = getString(R.string.tags_hint)
+            setSingleLine(true)
+            imeOptions = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.add_tags)
+            .setView(dialogBox(input))
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton(R.string.save) { _, _ ->
+                val added = NoteMeta.splitList(input.text.toString())
+                if (added.isNotEmpty()) {
+                    finishBulk { notes ->
+                        notes.forEach { n ->
+                            store.updateMeta(n.id) { m ->
+                                m.copy(tags = (m.tags + added).distinctBy { it.lowercase() })
+                            }
+                        }
+                    }
+                }
+            }
+            .show()
+    }
+
+    private fun moveSelected() {
+        val books = notebooks
+        val labels = listOf(getString(R.string.top_level)) + books + getString(R.string.menu_new_notebook)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.move)
+            .setItems(labels.toTypedArray()) { _, which ->
+                when (which) {
+                    0 -> finishBulk { notes -> notes.forEach { store.move(it.id, "") } }
+                    labels.size - 1 -> askNotebookName { path ->
+                        finishBulk { notes -> notes.forEach { store.move(it.id, path) } }
+                    }
+                    else -> {
+                        val target = books[which - 1]
+                        finishBulk { notes -> notes.forEach { store.move(it.id, target) } }
+                    }
+                }
+            }
+            .show()
+    }
+
+    /** Joins the selected notes into one new note; the originals go to the trash. */
+    private fun mergeSelected() {
+        val notes = selectedNotes()
+        if (notes.size < 2) {
+            Toast.makeText(this, R.string.merge_need_two, Toast.LENGTH_SHORT).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setMessage(getString(R.string.merge_confirm, notes.size))
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton(R.string.merge) { _, _ ->
+                finishBulk { list ->
+                    val first = list.first()
+                    val sections = list.joinToString("\n\n---\n\n") { n ->
+                        "## ${n.title}\n\n${n.body.trim()}"
+                    }
+                    val meta = NoteMeta(
+                        created = System.currentTimeMillis(),
+                        color = first.meta.color,
+                        tags = list.flatMap { it.meta.tags }.distinctBy { it.lowercase() }
+                    )
+                    val text = NoteMeta.build(meta, NoteStore.join(first.title, sections))
+                    store.save(null, first.title, text, first.folder)
+                    list.forEach { store.delete(it.id) }
+                }
+            }
+            .show()
+    }
+
+    private fun deleteSelected() {
+        val count = selected.size
+        AlertDialog.Builder(this)
+            .setMessage(getString(R.string.delete_selected_confirm, count))
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton(R.string.delete) { _, _ ->
+                finishBulk { notes -> notes.forEach { store.delete(it.id) } }
+            }
+            .show()
+    }
+
+    private fun restoreSelected() {
+        finishBulk { notes -> notes.forEach { store.restore(it.id) } }
+    }
+
+    private fun deleteSelectedForever() {
+        AlertDialog.Builder(this)
+            .setMessage(R.string.delete_forever_confirm)
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton(R.string.delete_forever) { _, _ ->
+                finishBulk { notes -> notes.forEach { store.deleteForever(it.id) } }
+            }
+            .show()
     }
 
     // ---------- Search ----------
@@ -427,45 +649,25 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun quickActions(note: Note) {
-        if (filter == FILTER_TRASH) {
-            val options = arrayOf(getString(R.string.restore), getString(R.string.delete_forever))
-            AlertDialog.Builder(this)
-                .setTitle(note.title)
-                .setItems(options) { _, which ->
-                    if (which == 0) {
-                        runThenReload { store.restore(note.id) }
-                    } else {
-                        confirmForever(note)
-                    }
-                }
-                .show()
-            return
+    private fun dialogBox(input: View): LinearLayout =
+        LinearLayout(this).apply {
+            val pad = Ui.dp(this@MainActivity, 20f)
+            setPadding(pad, pad / 2, pad, 0)
+            addView(input, LinearLayout.LayoutParams(MATCH, LinearLayout.LayoutParams.WRAP_CONTENT))
         }
-        val options = arrayOf(
-            getString(if (note.meta.pinned) R.string.unpin else R.string.pin),
-            getString(if (note.meta.archived) R.string.unarchive else R.string.archive),
-            getString(R.string.delete)
-        )
-        AlertDialog.Builder(this)
-            .setTitle(note.title)
-            .setItems(options) { _, which ->
-                when (which) {
-                    0 -> runThenReload { store.updateMeta(note.id) { it.copy(pinned = !it.pinned) } }
-                    1 -> runThenReload { store.updateMeta(note.id) { it.copy(archived = !it.archived) } }
-                    else -> runThenReload { store.delete(note.id) }
-                }
-            }
-            .show()
-    }
 
-    private fun confirmForever(note: Note) {
+    private fun askNotebookName(onName: (String) -> Unit) {
+        val input = EditText(this).apply {
+            hint = getString(R.string.notebook_hint)
+            setSingleLine(true)
+        }
         AlertDialog.Builder(this)
-            .setTitle(note.title)
-            .setMessage(R.string.delete_forever_confirm)
+            .setTitle(R.string.menu_new_notebook)
+            .setView(dialogBox(input))
             .setNegativeButton(R.string.cancel, null)
-            .setPositiveButton(R.string.delete_forever) { _, _ ->
-                runThenReload { store.deleteForever(note.id) }
+            .setPositiveButton(R.string.save) { _, _ ->
+                val path = NoteStore.cleanPath(input.text.toString())
+                if (path.isNotBlank()) onName(path)
             }
             .show()
     }
@@ -488,7 +690,10 @@ class MainActivity : Activity() {
         }
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
-                MENU_NOTEBOOK -> askNewNotebook()
+                MENU_NOTEBOOK -> askNotebookName { path ->
+                    filter = PREFIX_BOOK + path
+                    runThenReload { store.createNotebook(path) }
+                }
                 MENU_SORT -> chooseSort()
                 MENU_LAYOUT -> {
                     store.gridLayout = !store.gridLayout
@@ -509,30 +714,6 @@ class MainActivity : Activity() {
             true
         }
         popup.show()
-    }
-
-    private fun askNewNotebook() {
-        val input = EditText(this).apply {
-            hint = getString(R.string.notebook_hint)
-            setSingleLine(true)
-        }
-        val box = LinearLayout(this).apply {
-            val pad = Ui.dp(this@MainActivity, 20f)
-            setPadding(pad, pad / 2, pad, 0)
-            addView(input, LinearLayout.LayoutParams(MATCH, LinearLayout.LayoutParams.WRAP_CONTENT))
-        }
-        AlertDialog.Builder(this)
-            .setTitle(R.string.menu_new_notebook)
-            .setView(box)
-            .setNegativeButton(R.string.cancel, null)
-            .setPositiveButton(R.string.save) { _, _ ->
-                val path = NoteStore.cleanPath(input.text.toString())
-                if (path.isNotBlank()) {
-                    filter = PREFIX_BOOK + path
-                    runThenReload { store.createNotebook(path) }
-                }
-            }
-            .show()
     }
 
     private fun chooseSort() {
@@ -645,6 +826,14 @@ class MainActivity : Activity() {
             val note = items[position]
             val scale = store.fontScale()
             val lines = store.previewLines
+            val isSelected = note.id in selected
+
+            card.background = Ui.rounded(
+                p.surface,
+                if (isSelected) Ui.RED else p.border,
+                Ui.dp(this@MainActivity, 16f).toFloat(),
+                Ui.dp(this@MainActivity, if (isSelected) 2f else 1f)
+            )
 
             val titleRow = card.getChildAt(0) as LinearLayout
             val dot = titleRow.getChildAt(0)
@@ -683,9 +872,6 @@ class MainActivity : Activity() {
             return LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(pad, pad, pad, pad)
-                background = Ui.rounded(
-                    p.surface, p.border, Ui.dp(ctx, 16f).toFloat(), Ui.dp(ctx, 1f)
-                )
                 val row = LinearLayout(ctx).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
