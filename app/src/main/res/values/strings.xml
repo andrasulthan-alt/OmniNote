@@ -1,5 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">OmniNote</string>
-    <string name="hello">Notes, the quiet way.</string>
+    <string name="app_name" translatable="false">OmniNote</string>
+    <string name="hello" translatable="false">Notes, the quiet way.</string>
+
+    <string name="new_note">New note</string>
+    <string name="more">More options</string>
+    <string name="back">Back</string>
+    <string name="folder_internal">Stored on this phone</string>
+    <string name="folder_named">Folder: %1$s</string>
+    <string name="menu_choose_folder">Choose notes folder…</string>
+    <string name="menu_internal">Store on this phone</string>
+    <string name="empty">No notes yet.\nTap + to write one.</string>
+    <string name="title_hint">Title</string>
+    <string name="body_hint">Start writing…</string>
+    <string name="delete">Delete</string>
+    <string name="delete_confirm">Delete this note?</string>
+    <string name="cancel">Cancel</string>
+    <string name="error_open">Could not open this note.</string>
+    <string name="error_save">Could not save this note.</string>
+    <string name="error_folder">Could not read the notes folder.</string>
 </resources>
