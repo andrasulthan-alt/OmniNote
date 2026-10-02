@@ -1,8 +1,11 @@
 package io.github.andrasulthan.omninote
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.app.Application
 import android.app.KeyguardManager
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.hardware.biometrics.BiometricManager
@@ -11,8 +14,11 @@ import android.os.Build
 import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.SystemClock
+import android.util.Log
 import android.view.Gravity
 import android.widget.LinearLayout
+import android.widget.Toast
+import java.io.File
 
 /**
  * App lock: asks for the phone's fingerprint, face, PIN or pattern when OmniNote
@@ -75,14 +81,18 @@ object AppLock {
     }
 }
 
-/** Starts the app lock watcher for every screen of OmniNote. */
+/** Starts the app lock watcher and the crash log for every screen of OmniNote. */
 class OmniApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        CrashLog.install(this)
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             override fun onActivityStarted(activity: Activity) = AppLock.onStarted(activity)
             override fun onActivityStopped(activity: Activity) = AppLock.onStopped(activity)
-            override fun onActivityResumed(activity: Activity) = AppLock.onResumed(activity)
+            override fun onActivityResumed(activity: Activity) {
+                AppLock.onResumed(activity)
+                if (!AppLock.locked && activity !is LockActivity) CrashLog.showIfAny(activity)
+            }
             override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
             override fun onActivityPaused(activity: Activity) {}
             override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
@@ -196,5 +206,56 @@ class LockActivity : Activity() {
 
     companion object {
         private const val REQ_UNLOCK = 31
+    }
+}
+
+/**
+ * Keeps the last crash on this phone only, and shows it the next time OmniNote opens
+ * so it can be copied into a bug report. Nothing is ever sent anywhere.
+ */
+object CrashLog {
+
+    private const val FILE = "last-crash.txt"
+
+    fun install(app: Application) {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            try {
+                val version = try {
+                    @Suppress("DEPRECATION")
+                    app.packageManager.getPackageInfo(app.packageName, 0).versionName
+                } catch (e: Exception) {
+                    "?"
+                }
+                val header = "OmniNote $version · Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})" +
+                    " · ${Build.MANUFACTURER} ${Build.MODEL}"
+                File(app.filesDir, FILE).writeText(header + "\n\n" + Log.getStackTraceString(error))
+            } catch (e: Exception) {
+                // Never let the crash log itself get in the way.
+            }
+            previous?.uncaughtException(thread, error)
+        }
+    }
+
+    fun showIfAny(activity: Activity) {
+        val file = File(activity.filesDir, FILE)
+        if (!file.exists()) return
+        val text = try {
+            file.readText()
+        } catch (e: Exception) {
+            ""
+        }
+        file.delete()
+        if (text.isBlank()) return
+        AlertDialog.Builder(activity)
+            .setTitle("OmniNote closed unexpectedly")
+            .setMessage(text.take(3500))
+            .setPositiveButton("Copy") { _, _ ->
+                val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("OmniNote crash", text))
+                Toast.makeText(activity, "Copied", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 }
