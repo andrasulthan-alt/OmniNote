@@ -17,6 +17,7 @@
     <string name="menu_list">Tampilan daftar</string>
     <string name="menu_default_color">Warna bawaan…</string>
     <string name="menu_new_notebook">Notebook baru…</string>
+    <string name="menu_tasks">Tugas</string>
     <string name="empty">Belum ada catatan.\nKetuk + untuk menulis.</string>
     <string name="empty_filtered">Tidak ada catatan di sini.</string>
 
@@ -66,6 +67,21 @@
     <string name="notebook_hint">Nama notebook (pakai / untuk sub-notebook)</string>
     <string name="save">Simpan</string>
     <string name="duplicate_title">Sudah ada catatan dengan judul ini.</string>
+
+    <!-- Tugas dan pengingat -->
+    <string name="tasks">Tugas</string>
+    <string name="tasks_empty">Belum ada daftar centang.\nTambahkan dengan ☐ di catatan mana saja.</string>
+    <string name="tasks_done">Selesai</string>
+    <string name="remind">Ingatkan saya…</string>
+    <string name="remind_remove">Hapus pengingat</string>
+    <string name="remind_set">Pengingat dipasang untuk %1$s</string>
+    <string name="remind_past">Pilih waktu yang belum lewat.</string>
+    <string name="notify_pin">Tampilkan di notifikasi</string>
+    <string name="notify_unpin">Hapus dari notifikasi</string>
+    <string name="checked_to_bottom">Pindahkan centang ke bawah</string>
+    <string name="channel_reminders">Pengingat</string>
+    <string name="channel_pinned">Catatan di notifikasi</string>
+    <string name="notify_permission">Izinkan notifikasi supaya pengingat bisa muncul.</string>
 
     <!-- Sampah dan pilihan -->
     <string name="restore">Pulihkan</string>
