@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Drawing -->
+    <string name="tool_draw">Drawing</string>
+    <string name="draw_title">DRAW</string>
+    <string name="draw_save">SAVE</string>
+    <string name="draw_close">Close</string>
+    <string name="draw_discard">Discard the changes to this drawing?</string>
+    <string name="draw_discard_yes">Discard</string>
+    <string name="draw_white">White ink</string>
+    <string name="draw_red">Red ink</string>
+    <string name="draw_grey">Grey ink</string>
+    <string name="draw_size">Pen size</string>
+    <string name="draw_eraser">ERASE</string>
+    <string name="draw_undo">Undo</string>
+    <string name="draw_redo">Redo</string>
+    <string name="draw_clear">Clear</string>
+    <string name="draw_clear_confirm">Clear the whole drawing?</string>
+    <string name="draw_empty">Draw something first.</string>
+    <string name="draw_error">Could not save the drawing.</string>
+    <string name="draw_edit">Edit drawing…</string>
+    <string name="draw_pick">Pick a drawing</string>
+</resources>
