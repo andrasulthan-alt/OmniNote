@@ -15,6 +15,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.DocumentsContract
 import android.text.Editable
 import android.text.InputType
 import android.text.TextUtils
@@ -35,6 +36,9 @@ import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.TextView
 import android.widget.Toast
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.Executors
 
 /** Home screen: filters, search, note cards, multi-select, new-note button and settings menu. */
@@ -254,6 +258,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         reload()
+        Transfer.maybeAutoBackup(this)
         handler.removeCallbacks(refresher)
         handler.postDelayed(refresher, REFRESH_MS)
     }
@@ -734,10 +739,13 @@ class MainActivity : Activity() {
         menu.add(0, MENU_APP_LOCK, 7, R.string.menu_app_lock)
         menu.add(0, MENU_VAULT, 8, R.string.menu_vault)
         menu.add(0, MENU_SYNC, 9, R.string.menu_sync)
-        menu.add(0, MENU_FOLDER, 10, R.string.menu_choose_folder)
-        if (store.treeUri != null) menu.add(0, MENU_INTERNAL, 11, R.string.menu_internal)
+        menu.add(0, MENU_IMPORT, 10, R.string.menu_import)
+        menu.add(0, MENU_EXPORT_ALL, 11, R.string.menu_export_all)
+        menu.add(0, MENU_BACKUP, 12, R.string.menu_backup)
+        menu.add(0, MENU_FOLDER, 13, R.string.menu_choose_folder)
+        if (store.treeUri != null) menu.add(0, MENU_INTERNAL, 14, R.string.menu_internal)
         if (filter == FILTER_TRASH && trashNotes.isNotEmpty()) {
-            menu.add(0, MENU_EMPTY_TRASH, 12, R.string.empty_trash)
+            menu.add(0, MENU_EMPTY_TRASH, 15, R.string.empty_trash)
         }
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
@@ -758,13 +766,11 @@ class MainActivity : Activity() {
                 MENU_APP_LOCK -> chooseAppLock()
                 MENU_VAULT -> vaultMenu()
                 MENU_SYNC -> showSyncGuide()
+                MENU_IMPORT -> startImport()
+                MENU_EXPORT_ALL -> startExportAll()
+                MENU_BACKUP -> showBackup()
                 MENU_FOLDER -> chooseFolder()
-                MENU_INTERNAL -> {
-                    store.treeUri = null
-                    filter = FILTER_ALL
-                    Vault.close()
-                    reload()
-                }
+                MENU_INTERNAL -> switchLocation(null)
                 MENU_EMPTY_TRASH -> confirmEmptyTrash()
             }
             true
@@ -774,6 +780,167 @@ class MainActivity : Activity() {
 
     private fun chooseFolder() {
         startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_FOLDER)
+    }
+
+    /** Switches the notes location and offers to copy the notes from the old one. */
+    private fun switchLocation(newTree: Uri?) {
+        val oldTree = store.treeUri
+        if (oldTree == newTree) return
+        store.treeUri = newTree
+        filter = FILTER_ALL
+        Vault.close()
+        reload()
+        io.execute {
+            val oldRoot = NotesRoot(this, oldTree)
+            val count = try {
+                Transfer.countNotes(oldRoot)
+            } catch (e: Exception) {
+                0
+            }
+            if (count == 0) return@execute
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                AlertDialog.Builder(this)
+                    .setTitle(R.string.copy_notes_title)
+                    .setMessage(getString(R.string.copy_notes_msg, count))
+                    .setNegativeButton(R.string.copy_notes_no, null)
+                    .setPositiveButton(R.string.copy_notes_yes) { _, _ ->
+                        io.execute {
+                            val copied = try {
+                                Transfer.copyAll(oldRoot, NotesRoot(this, newTree))
+                            } catch (e: Exception) {
+                                -1
+                            }
+                            runOnUiThread {
+                                if (isDestroyed) return@runOnUiThread
+                                val message = if (copied >= 0) {
+                                    getString(R.string.copy_done, copied)
+                                } else {
+                                    getString(R.string.error_save)
+                                }
+                                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                                reload()
+                            }
+                        }
+                    }
+                    .show()
+            }
+        }
+    }
+
+    // ---------- Import, export and backup ----------
+
+    private fun startImport() {
+        val pick = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        }
+        try {
+            startActivityForResult(pick, REQ_IMPORT)
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(this, R.string.import_failed, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun runImport(uris: List<Uri>) {
+        Toast.makeText(this, R.string.import_working, Toast.LENGTH_SHORT).show()
+        io.execute {
+            val result = try {
+                Transfer.importUris(this, uris)
+            } catch (e: Exception) {
+                Transfer.Result(0, uris.size)
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                val message = when {
+                    result.notes > 0 -> getString(R.string.import_done, result.notes)
+                    result.failed > 0 -> getString(R.string.import_failed)
+                    else -> getString(R.string.import_none)
+                }
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                reload()
+            }
+        }
+    }
+
+    private fun startExportAll() {
+        val name = "OmniNote-export-" + SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date()) + ".zip"
+        val create = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/zip"
+            putExtra(Intent.EXTRA_TITLE, name)
+        }
+        try {
+            startActivityForResult(create, REQ_EXPORT_ALL)
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(this, R.string.export_failed, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun runExportAll(uri: Uri) {
+        Toast.makeText(this, R.string.export_working, Toast.LENGTH_SHORT).show()
+        io.execute {
+            val ok = try {
+                val out = contentResolver.openOutputStream(uri)
+                if (out != null) {
+                    Transfer.exportZip(this, out)
+                    true
+                } else {
+                    false
+                }
+            } catch (e: Exception) {
+                false
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                Toast.makeText(this, if (ok) R.string.export_done else R.string.export_failed, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun showBackup() {
+        val tree = Transfer.backupTree(this)
+        val builder = AlertDialog.Builder(this).setTitle(R.string.backup_title)
+        if (tree == null) {
+            builder.setMessage(R.string.backup_off_desc)
+                .setNegativeButton(R.string.cancel, null)
+                .setPositiveButton(R.string.backup_choose) { _, _ -> chooseBackupFolder() }
+        } else {
+            val last = Transfer.lastBackup(this)
+            val lastText = if (last > 0) {
+                DateUtils.formatDateTime(
+                    this, last,
+                    DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_SHOW_TIME or DateUtils.FORMAT_ABBREV_MONTH
+                )
+            } else {
+                getString(R.string.backup_never)
+            }
+            builder.setMessage(getString(R.string.backup_on_desc, treeName(tree), lastText))
+                .setPositiveButton(R.string.backup_now) { _, _ -> runBackupNow() }
+                .setNeutralButton(R.string.backup_turn_off) { _, _ -> Transfer.setBackupTree(this, null) }
+                .setNegativeButton(R.string.backup_change) { _, _ -> chooseBackupFolder() }
+        }
+        builder.show()
+    }
+
+    private fun treeName(tree: Uri): String {
+        val id = DocumentsContract.getTreeDocumentId(tree)
+        return id.substringAfterLast(':').ifBlank { id }
+    }
+
+    private fun chooseBackupFolder() {
+        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_BACKUP_FOLDER)
+    }
+
+    private fun runBackupNow() {
+        io.execute {
+            val ok = Transfer.backupNow(this)
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                Toast.makeText(this, if (ok) R.string.backup_done else R.string.backup_failed, Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     /** A short guide to syncing the notes folder with Syncthing. */
@@ -919,20 +1086,47 @@ class MainActivity : Activity() {
             .show()
     }
 
+    private fun keepAccess(uri: Uri) {
+        contentResolver.takePersistableUriPermission(
+            uri,
+            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        )
+    }
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQ_FOLDER || resultCode != RESULT_OK) return
-        val uri: Uri = data?.data ?: return
-        try {
-            contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-            store.treeUri = uri
-            filter = FILTER_ALL
-            Vault.close()
-        } catch (e: SecurityException) {
-            Toast.makeText(this, R.string.error_folder, Toast.LENGTH_LONG).show()
+        if (resultCode != RESULT_OK || data == null) return
+        when (requestCode) {
+            REQ_FOLDER -> {
+                val uri = data.data ?: return
+                try {
+                    keepAccess(uri)
+                    switchLocation(uri)
+                } catch (e: SecurityException) {
+                    Toast.makeText(this, R.string.error_folder, Toast.LENGTH_LONG).show()
+                }
+            }
+            REQ_BACKUP_FOLDER -> {
+                val uri = data.data ?: return
+                try {
+                    keepAccess(uri)
+                    Transfer.setBackupTree(this, uri)
+                    runBackupNow()
+                } catch (e: SecurityException) {
+                    Toast.makeText(this, R.string.error_folder, Toast.LENGTH_LONG).show()
+                }
+            }
+            REQ_IMPORT -> {
+                val uris = ArrayList<Uri>()
+                val clip = data.clipData
+                if (clip != null) {
+                    for (i in 0 until clip.itemCount) clip.getItemAt(i).uri?.let { uris.add(it) }
+                } else {
+                    data.data?.let { uris.add(it) }
+                }
+                if (uris.isNotEmpty()) runImport(uris)
+            }
+            REQ_EXPORT_ALL -> data.data?.let { runExportAll(it) }
         }
     }
 
@@ -1059,6 +1253,9 @@ class MainActivity : Activity() {
     companion object {
         private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         private const val REQ_FOLDER = 42
+        private const val REQ_IMPORT = 43
+        private const val REQ_EXPORT_ALL = 44
+        private const val REQ_BACKUP_FOLDER = 45
         private const val REFRESH_MS = 15_000L
         private const val KEY_FILTER = "filter"
         private const val KEY_RECENT = "recent_searches"
@@ -1081,6 +1278,9 @@ class MainActivity : Activity() {
         private const val MENU_APP_LOCK = 11
         private const val MENU_VAULT = 12
         private const val MENU_SYNC = 13
+        private const val MENU_IMPORT = 14
+        private const val MENU_EXPORT_ALL = 15
+        private const val MENU_BACKUP = 16
         private const val SYNCTHING_PAGE = "https://github.com/researchxxl/syncthing-android/releases"
         private val SYNCTHING_PACKAGES = listOf(
             "com.github.catfriend1.syncthingfork",
