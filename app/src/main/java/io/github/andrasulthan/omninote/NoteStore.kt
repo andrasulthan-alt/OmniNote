@@ -16,10 +16,14 @@ data class Note(
     val modified: Long,
     val folder: String = "",
     val meta: NoteMeta = NoteMeta(),
-    val body: String = ""
+    val body: String = "",
+    val fileName: String = ""
 ) {
     /** Creation time when known, otherwise the last change. */
     val created: Long get() = if (meta.created > 0) meta.created else modified
+
+    /** True for the extra copy Syncthing makes when a note changed on two devices. */
+    val isConflict: Boolean get() = NoteStore.isConflictName(fileName)
 }
 
 /**
@@ -99,7 +103,9 @@ class NoteStore(private val ctx: Context) {
     fun listTrash(): List<Note> = collect(trash = true)
 
     fun findByTitle(title: String): Note? =
-        list().firstOrNull { !it.meta.vault && it.title.equals(title.trim(), ignoreCase = true) }
+        list().firstOrNull {
+            !it.meta.vault && !it.isConflict && it.title.equals(title.trim(), ignoreCase = true)
+        }
 
     fun allTags(): List<String> =
         list().flatMap { it.meta.tags }.distinct().sortedWith(String.CASE_INSENSITIVE_ORDER)
@@ -212,6 +218,21 @@ class NoteStore(private val ctx: Context) {
                 walkTreeDirs(tree, d.id, p, out, depth + 1)
             }
         }
+    }
+
+    // ---------- Sync conflicts ----------
+
+    /** File name of a note, like "Shopping.md". */
+    fun fileNameOf(id: String): String =
+        if (id.startsWith(CONTENT)) displayName(Uri.parse(id)) ?: "" else File(id).name
+
+    /** The note a Syncthing conflict copy belongs to, or null when it is not found. */
+    fun findOriginal(conflictId: String): Note? {
+        val name = fileNameOf(conflictId)
+        if (!isConflictName(name)) return null
+        val base = conflictBase(name)
+        val folder = folderOf(conflictId)
+        return list().firstOrNull { it.folder == folder && it.fileName == base && it.id != conflictId }
     }
 
     // ---------- Reading and writing ----------
@@ -532,14 +553,14 @@ class NoteStore(private val ctx: Context) {
 
     private fun toNote(id: String, name: String, text: String, modified: Long, folder: String): Note {
         val (meta, content) = NoteMeta.parse(text)
-        if (meta.vault) return Note(id, "", "", modified, folder, meta, "")
+        if (meta.vault) return Note(id, "", "", modified, folder, meta, "", name)
         val (title, body) = split(content)
         val preview = body.lineSequence()
             .map { it.trim() }
             .filter { it.isNotEmpty() }
             .take(3)
             .joinToString("\n")
-        return Note(id, title.ifBlank { name.removeSuffix(MD) }, preview, modified, folder, meta, body)
+        return Note(id, title.ifBlank { name.removeSuffix(MD) }, preview, modified, folder, meta, body, name)
     }
 
     companion object {
@@ -555,11 +576,17 @@ class NoteStore(private val ctx: Context) {
         private const val HIDDEN = ".omninote"
         const val TRASH = ".trash"
         private const val MAX_DEPTH = 8
+        private val CONFLICT = Regex("\\.sync-conflict-\\d{8}-\\d{6}-[A-Z0-9]{7}")
 
         private fun isSpecial(name: String): Boolean = name.startsWith(".") || name == ATTACH
 
         private fun joinPath(parent: String, name: String): String =
             if (parent.isEmpty()) name else "$parent/$name"
+
+        fun isConflictName(name: String): Boolean = CONFLICT.containsMatchIn(name)
+
+        /** "Note.sync-conflict-20261002-173012-ABCDEF7.md" becomes "Note.md". */
+        fun conflictBase(name: String): String = name.replace(CONFLICT, "")
 
         fun cleanPath(path: String): String =
             path.split("/")
