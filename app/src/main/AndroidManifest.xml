@@ -49,6 +49,11 @@
             android:exported="false" />
 
         <activity
+            android:name=".DrawActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:exported="false" />
+
+        <activity
             android:name=".LockActivity"
             android:exported="false"
             android:launchMode="singleTop" />
