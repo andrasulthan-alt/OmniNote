@@ -1,0 +1,181 @@
+package io.github.andrasulthan.omninote
+
+import android.content.Context
+import android.net.Uri
+import android.provider.DocumentsContract
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+data class Note(
+    val id: String,
+    val title: String,
+    val preview: String,
+    val modified: Long
+)
+
+/**
+ * Notes are plain Markdown files, either in app storage or in a folder the user
+ * picks (so tools like Syncthing or Obsidian can read them too).
+ */
+class NoteStore(private val ctx: Context) {
+
+    private val prefs = ctx.getSharedPreferences("omninote", Context.MODE_PRIVATE)
+
+    var treeUri: Uri?
+        get() = prefs.getString(KEY_TREE, null)?.let { Uri.parse(it) }
+        set(value) {
+            prefs.edit().putString(KEY_TREE, value?.toString()).apply()
+        }
+
+    private val localDir: File
+        get() = File(ctx.filesDir, "notes").apply { mkdirs() }
+
+    /** Readable name of the chosen folder, or null when notes live on this phone only. */
+    fun folderName(): String? {
+        val tree = treeUri ?: return null
+        val docId = DocumentsContract.getTreeDocumentId(tree)
+        return docId.substringAfterLast(':').ifBlank { docId }
+    }
+
+    fun list(): List<Note> {
+        val tree = treeUri
+        val notes = ArrayList<Note>()
+        if (tree == null) {
+            val files = localDir.listFiles() ?: emptyArray()
+            for (f in files) {
+                if (f.isFile && f.name.endsWith(MD)) {
+                    notes.add(toNote(f.absolutePath, f.name, f.readText(), f.lastModified()))
+                }
+            }
+        } else {
+            val children = DocumentsContract.buildChildDocumentsUriUsingTree(
+                tree, DocumentsContract.getTreeDocumentId(tree)
+            )
+            val projection = arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+                DocumentsContract.Document.COLUMN_MIME_TYPE
+            )
+            val cursor = ctx.contentResolver.query(children, projection, null, null, null)
+            if (cursor != null) {
+                try {
+                    while (cursor.moveToNext()) {
+                        val docId = cursor.getString(0)
+                        val name = cursor.getString(1) ?: ""
+                        val isDir = cursor.getString(3) == DocumentsContract.Document.MIME_TYPE_DIR
+                        if (!isDir && name.endsWith(MD)) {
+                            val uri = DocumentsContract.buildDocumentUriUsingTree(tree, docId).toString()
+                            notes.add(toNote(uri, name, read(uri), cursor.getLong(2)))
+                        }
+                    }
+                } finally {
+                    cursor.close()
+                }
+            }
+        }
+        return notes.sortedByDescending { it.modified }
+    }
+
+    fun read(id: String): String {
+        return if (id.startsWith(CONTENT)) {
+            ctx.contentResolver.openInputStream(Uri.parse(id))?.use {
+                it.readBytes().toString(Charsets.UTF_8)
+            } ?: ""
+        } else {
+            val f = File(id)
+            if (f.exists()) f.readText() else ""
+        }
+    }
+
+    /** Writes the note and returns its id (a new file is created when id is null). */
+    fun save(id: String?, title: String, text: String): String {
+        val target = id ?: create(fileNameFor(title))
+        if (target.startsWith(CONTENT)) {
+            ctx.contentResolver.openOutputStream(Uri.parse(target), "wt")?.use {
+                it.write(text.toByteArray(Charsets.UTF_8))
+            }
+        } else {
+            File(target).writeText(text)
+        }
+        return target
+    }
+
+    fun delete(id: String) {
+        if (id.startsWith(CONTENT)) {
+            DocumentsContract.deleteDocument(ctx.contentResolver, Uri.parse(id))
+        } else {
+            File(id).delete()
+        }
+    }
+
+    private fun create(name: String): String {
+        val tree = treeUri
+        if (tree == null) {
+            var file = File(localDir, name)
+            var n = 2
+            while (file.exists()) {
+                file = File(localDir, name.removeSuffix(MD) + " ($n)" + MD)
+                n++
+            }
+            file.createNewFile()
+            return file.absolutePath
+        }
+        val parent = DocumentsContract.buildDocumentUriUsingTree(
+            tree, DocumentsContract.getTreeDocumentId(tree)
+        )
+        val uri = DocumentsContract.createDocument(
+            ctx.contentResolver, parent, "application/octet-stream", name
+        ) ?: throw IllegalStateException("Cannot create $name")
+        return uri.toString()
+    }
+
+    private fun toNote(id: String, name: String, text: String, modified: Long): Note {
+        val (title, body) = split(text)
+        val preview = body.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .take(2)
+            .joinToString("  ")
+        return Note(id, title.ifBlank { name.removeSuffix(MD) }, preview, modified)
+    }
+
+    companion object {
+        private const val KEY_TREE = "tree_uri"
+        private const val MD = ".md"
+        private const val CONTENT = "content://"
+
+        /** Splits "# Title" on the first line from the rest of the note. */
+        fun split(text: String): Pair<String, String> {
+            val normalized = text.replace("\r\n", "\n")
+            val firstLine = normalized.substringBefore('\n').trim()
+            return if (firstLine.startsWith("# ")) {
+                val body = if (normalized.contains('\n')) {
+                    normalized.substringAfter('\n').trimStart('\n')
+                } else {
+                    ""
+                }
+                firstLine.removePrefix("# ").trim() to body
+            } else {
+                "" to normalized
+            }
+        }
+
+        fun join(title: String, body: String): String =
+            if (title.isBlank()) body else "# ${title.trim()}\n\n$body"
+
+        fun fileNameFor(title: String): String {
+            val clean = title
+                .replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), " ")
+                .trim()
+                .take(60)
+                .trim()
+            val base = clean.ifBlank {
+                "Note " + SimpleDateFormat("yyyy-MM-dd HHmmss", Locale.US).format(Date())
+            }
+            return base + MD
+        }
+    }
+}
