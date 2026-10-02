@@ -20,6 +20,7 @@
     <string name="menu_tasks">Tugas</string>
     <string name="menu_app_lock">Kunci aplikasi…</string>
     <string name="menu_vault">Vault…</string>
+    <string name="menu_sync">Sync…</string>
     <string name="empty">Belum ada catatan.\nKetuk + untuk menulis.</string>
     <string name="empty_filtered">Tidak ada catatan di sini.</string>
 
@@ -27,6 +28,7 @@
     <string name="filter_all">Semua</string>
     <string name="filter_archive">Arsip</string>
     <string name="filter_trash">Sampah</string>
+    <string name="filter_conflicts">Konflik</string>
     <string name="pinned">Disematkan</string>
 
     <!-- Urutan -->
@@ -114,6 +116,31 @@
     <string name="unlock_note">Lepas kunci</string>
     <string name="locked_note">Catatan terkunci</string>
     <string name="locked_open_hint">Masukkan sandi vault untuk membuka catatan ini.</string>
+
+    <!-- Riwayat versi -->
+    <string name="history">Riwayat versi…</string>
+    <string name="history_empty">Belum ada versi lama. Versi disimpan setiap kali catatan berubah, paling sering setiap 2 menit.</string>
+    <string name="history_restore">Pulihkan versi ini</string>
+    <string name="history_restored">Versi dipulihkan</string>
+
+    <!-- Konflik sync -->
+    <string name="conflict_label">Konflik</string>
+    <string name="conflict_banner">Ini salinan konflik sync: catatan diubah di dua perangkat. Pilih yang mau disimpan.</string>
+    <string name="conflict_keep_this">Simpan versi ini</string>
+    <string name="conflict_keep_original">Simpan yang asli</string>
+    <string name="conflict_merge">Gabungkan keduanya</string>
+    <string name="conflict_open_original">Buka yang asli</string>
+    <string name="conflict_no_original">Catatan aslinya tidak ditemukan.</string>
+    <string name="conflict_resolved">Konflik selesai</string>
+    <string name="conflict_merged_heading">Dari perangkat lain</string>
+
+    <!-- Panduan sync -->
+    <string name="sync_title">Sync dengan Syncthing</string>
+    <string name="sync_steps">1. Pasang Syncthing di setiap perangkat (Syncthing-Fork untuk Android).\n\n2. Di OmniNote, pilih folder catatan, misalnya Documents/OmniNote.\n\n3. Di Syncthing, bagikan folder yang sama ke perangkat lain.\n\n4. OmniNote memperbarui daftar sendiri saat Syncthing membawa perubahan. Kalau catatan diubah di dua perangkat, catatan itu muncul di filter Konflik.</string>
+    <string name="sync_internal_warning">Catatan Anda saat ini tersimpan di dalam OmniNote, yang tidak bisa dijangkau Syncthing. Pilih folder catatan dulu.</string>
+    <string name="sync_choose_folder">Pilih folder</string>
+    <string name="sync_open">Buka Syncthing</string>
+    <string name="sync_get">Pasang Syncthing</string>
 
     <!-- Sampah dan pilihan -->
     <string name="restore">Pulihkan</string>
