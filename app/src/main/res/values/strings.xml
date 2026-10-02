@@ -20,6 +20,7 @@
     <string name="menu_list">List view</string>
     <string name="menu_default_color">Default color…</string>
     <string name="menu_new_notebook">New notebook…</string>
+    <string name="menu_tasks">Tasks</string>
     <string name="empty">No notes yet.\nTap + to write one.</string>
     <string name="empty_filtered">No notes here.</string>
 
@@ -69,6 +70,21 @@
     <string name="notebook_hint">Notebook name (use / for sub-notebooks)</string>
     <string name="save">Save</string>
     <string name="duplicate_title">A note with this title already exists.</string>
+
+    <!-- Tasks and reminders -->
+    <string name="tasks">Tasks</string>
+    <string name="tasks_empty">No checklist items yet.\nAdd one with ☐ in any note.</string>
+    <string name="tasks_done">Done</string>
+    <string name="remind">Remind me…</string>
+    <string name="remind_remove">Remove reminder</string>
+    <string name="remind_set">Reminder set for %1$s</string>
+    <string name="remind_past">Choose a time in the future.</string>
+    <string name="notify_pin">Show in notifications</string>
+    <string name="notify_unpin">Remove from notifications</string>
+    <string name="checked_to_bottom">Move checked to bottom</string>
+    <string name="channel_reminders">Reminders</string>
+    <string name="channel_pinned">Notes in notifications</string>
+    <string name="notify_permission">Allow notifications so reminders can appear.</string>
 
     <!-- Trash and selection -->
     <string name="restore">Restore</string>
