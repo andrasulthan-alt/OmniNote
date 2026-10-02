@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutId="new_note"
+        android:shortcutShortLabel="@string/shortcut_new_note">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetClass="io.github.andrasulthan.omninote.EditorActivity"
+            android:targetPackage="io.github.andrasulthan.omninote" />
+    </shortcut>
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutId="new_list"
+        android:shortcutShortLabel="@string/shortcut_new_list">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetClass="io.github.andrasulthan.omninote.EditorActivity"
+            android:targetPackage="io.github.andrasulthan.omninote">
+            <extra
+                android:name="new_checklist"
+                android:value="yes" />
+        </intent>
+    </shortcut>
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutId="tasks"
+        android:shortcutShortLabel="@string/shortcut_tasks">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetClass="io.github.andrasulthan.omninote.TasksActivity"
+            android:targetPackage="io.github.andrasulthan.omninote" />
+    </shortcut>
+</shortcuts>
