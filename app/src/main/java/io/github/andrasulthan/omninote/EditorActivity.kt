@@ -5,8 +5,11 @@ import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Bundle
 import android.text.Editable
@@ -168,6 +171,8 @@ class EditorActivity : Activity() {
         tool("☐", R.string.tool_task) { task() }
         tool(">", R.string.tool_quote) { quote() }
         tool("↗", R.string.tool_link) { link() }
+        tool("[[", R.string.tool_note_link) { pickNoteLink() }
+        tool("IMG", R.string.tool_image) { pickImage() }
         tool("▦", R.string.tool_table) { table() }
         tool("—", R.string.tool_rule) { rule() }
 
@@ -206,6 +211,10 @@ class EditorActivity : Activity() {
             intent.action == Intent.ACTION_SEND -> {
                 titleView.setText(intent.getStringExtra(Intent.EXTRA_SUBJECT) ?: "")
                 bodyView.setText(intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString() ?: "")
+            }
+            intent.getStringExtra(EXTRA_TITLE) != null -> {
+                titleView.setText(intent.getStringExtra(EXTRA_TITLE))
+                bodyView.requestFocus()
             }
             else -> titleView.requestFocus()
         }
@@ -253,7 +262,10 @@ class EditorActivity : Activity() {
             p,
             resources.displayMetrics.density,
             { line -> toggleTask(line) },
-            { url -> openLink(url) }
+            { url -> openLink(url) },
+            { title -> openNoteByTitle(title) },
+            { path -> loadImage(path) },
+            getString(R.string.image_missing)
         )
         bodyView.visibility = View.GONE
         toolArea.visibility = View.GONE
@@ -293,6 +305,95 @@ class EditorActivity : Activity() {
         } catch (e: ActivityNotFoundException) {
             Toast.makeText(this, R.string.error_link, Toast.LENGTH_SHORT).show()
         }
+    }
+
+    /** Opens the note with this title, or starts a new one when it does not exist yet. */
+    private fun openNoteByTitle(title: String) {
+        save()
+        val found = try {
+            store.findByTitle(title)
+        } catch (e: Exception) {
+            null
+        }
+        val next = Intent(this, EditorActivity::class.java)
+        if (found != null) {
+            next.putExtra(EXTRA_ID, found.id)
+        } else {
+            next.putExtra(EXTRA_TITLE, title)
+        }
+        startActivity(next)
+    }
+
+    private fun loadImage(path: String): Drawable? {
+        return try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            store.openAttachment(path)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+            if (bounds.outWidth <= 0) return null
+            val maxWidth = resources.displayMetrics.widthPixels - Ui.dp(this, 40f)
+            var sample = 1
+            while (bounds.outWidth / sample > maxWidth * 2) sample *= 2
+            val options = BitmapFactory.Options().apply { inSampleSize = sample }
+            val bitmap = store.openAttachment(path)?.use {
+                BitmapFactory.decodeStream(it, null, options)
+            } ?: return null
+            val width = minOf(maxWidth, bitmap.width)
+            val height = (bitmap.height.toFloat() * width / bitmap.width).toInt()
+            BitmapDrawable(resources, bitmap).apply { setBounds(0, 0, width, height) }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    // ---------- Images and note links ----------
+
+    private fun pickImage() {
+        val pick = Intent(Intent.ACTION_GET_CONTENT).apply {
+            type = "image/*"
+            addCategory(Intent.CATEGORY_OPENABLE)
+        }
+        try {
+            startActivityForResult(pick, REQ_IMAGE)
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(this, R.string.error_image, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQ_IMAGE || resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        Thread {
+            val path = try {
+                store.saveAttachment(uri)
+            } catch (e: Exception) {
+                null
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                if (path == null) {
+                    Toast.makeText(this, R.string.error_image, Toast.LENGTH_LONG).show()
+                } else {
+                    insertBlock("![]($path)")
+                }
+            }
+        }.start()
+    }
+
+    private fun pickNoteLink() {
+        val current = titleView.text.toString().trim()
+        val titles = try {
+            store.list().map { it.title }.filter { !it.equals(current, ignoreCase = true) }
+        } catch (e: Exception) {
+            emptyList()
+        }
+        if (titles.isEmpty()) {
+            Toast.makeText(this, R.string.no_other_notes, Toast.LENGTH_SHORT).show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.pick_note)
+            .setItems(titles.toTypedArray()) { _, which -> insertAtCursor("[[${titles[which]}]]") }
+            .show()
     }
 
     // ---------- More menu: share, contents, delete ----------
@@ -382,6 +483,21 @@ class EditorActivity : Activity() {
 
     // ---------- Toolbar actions ----------
 
+    private fun insertAtCursor(text: String) {
+        val e = bodyView.text
+        val pos = bodyView.selectionStart.coerceIn(0, e.length)
+        e.insert(pos, text)
+        bodyView.setSelection((pos + text.length).coerceAtMost(e.length))
+    }
+
+    /** Inserts text on its own line. */
+    private fun insertBlock(text: String) {
+        val e = bodyView.text
+        val pos = bodyView.selectionStart.coerceIn(0, e.length)
+        val lead = if (pos > 0 && e[pos - 1] != '\n') "\n" else ""
+        insertAtCursor("$lead$text\n")
+    }
+
     private fun wrap(prefix: String, suffix: String = prefix) {
         val e = bodyView.text
         val a = minOf(bodyView.selectionStart, bodyView.selectionEnd).coerceIn(0, e.length)
@@ -463,24 +579,20 @@ class EditorActivity : Activity() {
 
     private fun table() {
         val c = getString(R.string.table_col)
-        val e = bodyView.text
-        val pos = bodyView.selectionStart.coerceIn(0, e.length)
-        val lead = if (pos > 0 && e[pos - 1] != '\n') "\n" else ""
-        e.insert(pos, "$lead| $c 1 | $c 2 |\n| --- | --- |\n|  |  |\n")
+        insertBlock("| $c 1 | $c 2 |\n| --- | --- |\n|  |  |")
     }
 
     private fun rule() {
-        val e = bodyView.text
-        val pos = bodyView.selectionStart.coerceIn(0, e.length)
-        val lead = if (pos > 0 && e[pos - 1] != '\n') "\n" else ""
-        e.insert(pos, "$lead---\n")
+        insertBlock("---")
     }
 
     companion object {
         const val EXTRA_ID = "note_id"
+        const val EXTRA_TITLE = "note_title"
         private const val KEY_ID = "note_id"
         private const val ID_TITLE = 101
         private const val ID_BODY = 102
+        private const val REQ_IMAGE = 7
         private const val M_SHARE = 1
         private const val M_TOC = 2
         private const val M_DELETE = 3
