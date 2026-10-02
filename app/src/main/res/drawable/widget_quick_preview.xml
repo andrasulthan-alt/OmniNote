@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="80dp"
+    android:viewportWidth="400"
+    android:viewportHeight="100">
+
+    <!-- Black card with a thin grey edge -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M25,1 H375 A24,24 0 0 1 399,25 V75 A24,24 0 0 1 375,99 H25 A24,24 0 0 1 1,75 V25 A24,24 0 0 1 25,1 Z"
+        android:strokeColor="#FF333333"
+        android:strokeWidth="2" />
+
+    <!-- OMNINOTE -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M31,41 h6 a3,3 0 0 1 3,3 v12 a3,3 0 0 1 -3,3 h-6 a3,3 0 0 1 -3,-3 v-12 a3,3 0 0 1 3,-3 z
+            M44,59 V41 L50,50 L56,41 V59
+            M60,59 V41 L72,59 V41
+            M78,41 H86 M82,41 V59 M78,59 H86
+            M92,59 V41 L104,59 V41
+            M111,41 h6 a3,3 0 0 1 3,3 v12 a3,3 0 0 1 -3,3 h-6 a3,3 0 0 1 -3,-3 v-12 a3,3 0 0 1 3,-3 z
+            M124,41 H136 M130,41 V59
+            M152,41 H140 V59 H152 M140,50 H149"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2.6" />
+
+    <!-- Red dot -->
+    <path
+        android:fillColor="#FFD71921"
+        android:pathData="M159,52 a3.5,3.5 0 1 0 7,0 a3.5,3.5 0 1 0 -7,0 z" />
+
+    <!-- Two outlined pills -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M226,34 H276 A16,16 0 0 1 276,66 H226 A16,16 0 0 1 226,34 Z
+            M316,34 H366 A16,16 0 0 1 366,66 H316 A16,16 0 0 1 316,34 Z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2" />
+
+    <!-- ☐ LIST and + NOTE -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M222,45 H232 V55 H222 Z
+            M242,45 V55 H249
+            M251,45 H258 M254.5,45 V55 M251,55 H258
+            M267,45 H260 V50 H267 V55 H260
+            M269,45 H276 M272.5,45 V55
+            M311,50 H321 M316,45 V55
+            M332,55 V45 L339,55 V45
+            M341,45 H348 V55 H341 Z
+            M350,45 H357 M353.5,45 V55
+            M366,45 H359 V55 H366 M359,50 H364"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="1.6" />
+</vector>
