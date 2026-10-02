@@ -13,17 +13,25 @@ data class Note(
     val id: String,
     val title: String,
     val preview: String,
-    val modified: Long
-)
+    val modified: Long,
+    val folder: String = "",
+    val meta: NoteMeta = NoteMeta(),
+    val body: String = ""
+) {
+    /** Creation time when known, otherwise the last change. */
+    val created: Long get() = if (meta.created > 0) meta.created else modified
+}
 
 /**
  * Notes are plain Markdown files, either in app storage or in a folder the user
  * picks (so tools like Syncthing or Obsidian can read them too).
- * Images live in an "attachments" folder next to the notes.
+ * Notebooks are sub-folders, deleted notes go to ".trash", images to "attachments".
  */
 class NoteStore(private val ctx: Context) {
 
     private val prefs = ctx.getSharedPreferences("omninote", Context.MODE_PRIVATE)
+
+    // ---------- Settings ----------
 
     var treeUri: Uri?
         get() = prefs.getString(KEY_TREE, null)?.let { Uri.parse(it) }
@@ -45,6 +53,26 @@ class NoteStore(private val ctx: Context) {
             prefs.edit().putInt(KEY_FONT, value.coerceIn(0, 3)).apply()
         }
 
+    /** 0 last modified, 1 newest created, 2 oldest created, 3 title A to Z. */
+    var sortMode: Int
+        get() = prefs.getInt(KEY_SORT, 0)
+        set(value) {
+            prefs.edit().putInt(KEY_SORT, value.coerceIn(0, 3)).apply()
+        }
+
+    var gridLayout: Boolean
+        get() = prefs.getBoolean(KEY_GRID, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_GRID, value).apply()
+        }
+
+    /** Colour given to new notes, or null for none. */
+    var defaultColor: String?
+        get() = prefs.getString(KEY_COLOR, null)
+        set(value) {
+            prefs.edit().putString(KEY_COLOR, value).apply()
+        }
+
     fun fontScale(): Float = when (fontLevel) {
         0 -> 0.875f
         2 -> 1.15f
@@ -62,49 +90,130 @@ class NoteStore(private val ctx: Context) {
         return docId.substringAfterLast(':').ifBlank { docId }
     }
 
-    fun list(): List<Note> {
-        val tree = treeUri
-        val notes = ArrayList<Note>()
-        if (tree == null) {
-            val files = localDir.listFiles() ?: emptyArray()
-            for (f in files) {
-                if (f.isFile && f.name.endsWith(MD)) {
-                    notes.add(toNote(f.absolutePath, f.name, f.readText(), f.lastModified()))
-                }
-            }
-        } else {
-            val children = DocumentsContract.buildChildDocumentsUriUsingTree(
-                tree, DocumentsContract.getTreeDocumentId(tree)
-            )
-            val projection = arrayOf(
-                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                DocumentsContract.Document.COLUMN_LAST_MODIFIED,
-                DocumentsContract.Document.COLUMN_MIME_TYPE
-            )
-            val cursor = ctx.contentResolver.query(children, projection, null, null, null)
-            if (cursor != null) {
-                try {
-                    while (cursor.moveToNext()) {
-                        val docId = cursor.getString(0)
-                        val name = cursor.getString(1) ?: ""
-                        val isDir = cursor.getString(3) == DocumentsContract.Document.MIME_TYPE_DIR
-                        if (!isDir && name.endsWith(MD)) {
-                            val uri = DocumentsContract.buildDocumentUriUsingTree(tree, docId).toString()
-                            notes.add(toNote(uri, name, read(uri), cursor.getLong(2)))
-                        }
-                    }
-                } finally {
-                    cursor.close()
-                }
-            }
-        }
-        return notes.sortedByDescending { it.modified }
-    }
+    // ---------- Listing ----------
 
-    /** Finds a note by its title (used by [[note links]]). */
+    /** Every note outside the trash (archived ones included). */
+    fun list(): List<Note> = collect(trash = false)
+
+    fun listTrash(): List<Note> = collect(trash = true)
+
     fun findByTitle(title: String): Note? =
         list().firstOrNull { it.title.equals(title.trim(), ignoreCase = true) }
+
+    fun allTags(): List<String> =
+        list().flatMap { it.meta.tags }.distinct().sortedWith(String.CASE_INSENSITIVE_ORDER)
+
+    /** All notebook paths, like "Work" and "Work/Ideas". */
+    fun notebooks(): List<String> {
+        val out = ArrayList<String>()
+        val tree = treeUri
+        if (tree == null) {
+            walkLocalDirs(localDir, "", out)
+        } else {
+            walkTreeDirs(tree, DocumentsContract.getTreeDocumentId(tree), "", out, 0)
+        }
+        return out.sortedWith(String.CASE_INSENSITIVE_ORDER)
+    }
+
+    fun createNotebook(path: String): Boolean {
+        val clean = cleanPath(path)
+        if (clean.isBlank()) return false
+        val tree = treeUri
+        return if (tree == null) {
+            File(localDir, clean).mkdirs() || File(localDir, clean).isDirectory
+        } else {
+            folderDocId(tree, clean, create = true) != null
+        }
+    }
+
+    private fun collect(trash: Boolean): List<Note> {
+        val notes = ArrayList<Note>()
+        val tree = treeUri
+        if (tree == null) {
+            if (trash) {
+                val files = File(localDir, TRASH).listFiles() ?: emptyArray()
+                for (f in files) {
+                    if (f.isFile && f.name.endsWith(MD)) {
+                        notes.add(toNote(f.absolutePath, f.name, f.readText(), f.lastModified(), TRASH))
+                    }
+                }
+            } else {
+                walkLocal(localDir, "", notes)
+            }
+        } else {
+            if (trash) {
+                val trashId = folderDocId(tree, TRASH, create = false)
+                if (trashId != null) {
+                    for (d in children(tree, trashId)) {
+                        if (!d.isDir && d.name.endsWith(MD)) {
+                            val uri = DocumentsContract.buildDocumentUriUsingTree(tree, d.id).toString()
+                            notes.add(toNote(uri, d.name, read(uri), d.modified, TRASH))
+                        }
+                    }
+                }
+            } else {
+                walkTree(tree, DocumentsContract.getTreeDocumentId(tree), "", notes, 0)
+            }
+        }
+        return sort(notes)
+    }
+
+    private fun sort(notes: List<Note>): List<Note> {
+        val byMode: Comparator<Note> = when (sortMode) {
+            1 -> compareByDescending<Note> { it.created }
+            2 -> compareBy<Note> { it.created }
+            3 -> compareBy(String.CASE_INSENSITIVE_ORDER) { it.title }
+            else -> compareByDescending<Note> { it.modified }
+        }
+        return notes.sortedWith(compareByDescending<Note> { it.meta.pinned }.then(byMode))
+    }
+
+    private fun walkLocal(dir: File, path: String, out: MutableList<Note>) {
+        val files = dir.listFiles() ?: return
+        for (f in files) {
+            if (f.isDirectory) {
+                if (!isSpecial(f.name)) walkLocal(f, joinPath(path, f.name), out)
+            } else if (f.name.endsWith(MD)) {
+                out.add(toNote(f.absolutePath, f.name, f.readText(), f.lastModified(), path))
+            }
+        }
+    }
+
+    private fun walkLocalDirs(dir: File, path: String, out: MutableList<String>) {
+        val files = dir.listFiles() ?: return
+        for (f in files) {
+            if (f.isDirectory && !isSpecial(f.name)) {
+                val p = joinPath(path, f.name)
+                out.add(p)
+                walkLocalDirs(f, p, out)
+            }
+        }
+    }
+
+    private fun walkTree(tree: Uri, docId: String, path: String, out: MutableList<Note>, depth: Int) {
+        if (depth > MAX_DEPTH) return
+        for (d in children(tree, docId)) {
+            if (d.isDir) {
+                if (!isSpecial(d.name)) walkTree(tree, d.id, joinPath(path, d.name), out, depth + 1)
+            } else if (d.name.endsWith(MD)) {
+                val uri = DocumentsContract.buildDocumentUriUsingTree(tree, d.id).toString()
+                out.add(toNote(uri, d.name, read(uri), d.modified, path))
+            }
+        }
+    }
+
+    private fun walkTreeDirs(tree: Uri, docId: String, path: String, out: MutableList<String>, depth: Int) {
+        if (depth > MAX_DEPTH) return
+        for (d in children(tree, docId)) {
+            if (d.isDir && !isSpecial(d.name)) {
+                val p = joinPath(path, d.name)
+                out.add(p)
+                walkTreeDirs(tree, d.id, p, out, depth + 1)
+            }
+        }
+    }
+
+    // ---------- Reading and writing ----------
 
     fun read(id: String): String {
         return if (id.startsWith(CONTENT)) {
@@ -117,24 +226,116 @@ class NoteStore(private val ctx: Context) {
         }
     }
 
-    /** Writes the note and returns its id (a new file is created when id is null). */
-    fun save(id: String?, title: String, text: String): String {
-        val target = id ?: create(fileNameFor(title))
-        if (target.startsWith(CONTENT)) {
-            ctx.contentResolver.openOutputStream(Uri.parse(target), "wt")?.use {
-                it.write(text.toByteArray(Charsets.UTF_8))
-            }
-        } else {
-            File(target).writeText(text)
-        }
+    /**
+     * Writes the note and returns its id.
+     * A new file is created (inside the given notebook) when id is null.
+     */
+    fun save(id: String?, title: String, text: String, folder: String = ""): String {
+        val target = id ?: create(fileNameFor(title), cleanPath(folder))
+        write(target, text)
         return target
     }
 
-    fun delete(id: String) {
+    /** Changes the properties of a note and keeps its text. */
+    fun updateMeta(id: String, change: (NoteMeta) -> NoteMeta) {
+        val (meta, content) = NoteMeta.parse(read(id))
+        write(id, NoteMeta.build(change(meta), content))
+    }
+
+    private fun write(id: String, text: String) {
+        if (id.startsWith(CONTENT)) {
+            ctx.contentResolver.openOutputStream(Uri.parse(id), "wt")?.use {
+                it.write(text.toByteArray(Charsets.UTF_8))
+            }
+        } else {
+            File(id).writeText(text)
+        }
+    }
+
+    // ---------- Notebooks, trash and moving ----------
+
+    /** Moves a note to another notebook ("" is the top level) and returns its new id. */
+    fun move(id: String, folder: String): String {
+        val target = cleanPath(folder)
+        val tree = treeUri
+        if (tree == null) {
+            val src = File(id)
+            val dir = File(localDir, target).apply { mkdirs() }
+            if (src.parentFile?.canonicalPath == dir.canonicalPath) return id
+            val dest = uniqueFile(dir, src.name)
+            if (!src.renameTo(dest)) {
+                dest.writeText(src.readText())
+                src.delete()
+            }
+            return dest.absolutePath
+        }
+        val srcUri = Uri.parse(id)
+        val targetId = folderDocId(tree, target, create = true)
+            ?: throw IllegalStateException("Cannot open $target")
+        val targetUri = DocumentsContract.buildDocumentUriUsingTree(tree, targetId)
+        try {
+            val path = DocumentsContract.findDocumentPath(ctx.contentResolver, srcUri)?.path
+            if (path != null && path.size >= 2) {
+                val parentId = path[path.size - 2]
+                if (parentId == targetId) return id
+                val parentUri = DocumentsContract.buildDocumentUriUsingTree(tree, parentId)
+                val moved = DocumentsContract.moveDocument(ctx.contentResolver, srcUri, parentUri, targetUri)
+                if (moved != null) return moved.toString()
+            }
+        } catch (e: Exception) {
+            // Some folders cannot move files; copy and delete below instead.
+        }
+        val name = displayName(srcUri) ?: fileNameFor("")
+        val copy = DocumentsContract.createDocument(
+            ctx.contentResolver, targetUri, "application/octet-stream", name
+        ) ?: throw IllegalStateException("Cannot move $name")
+        write(copy.toString(), read(id))
+        DocumentsContract.deleteDocument(ctx.contentResolver, srcUri)
+        return copy.toString()
+    }
+
+    /** Moves a note to the trash and remembers where it came from. Returns the new id. */
+    fun delete(id: String): String {
+        val from = folderOf(id)
+        updateMeta(id) { it.copy(trashedFrom = from.ifBlank { null }) }
+        return move(id, TRASH)
+    }
+
+    /** Puts a note from the trash back in its notebook. Returns the new id. */
+    fun restore(id: String): String {
+        val (meta, _) = NoteMeta.parse(read(id))
+        val folder = meta.trashedFrom ?: ""
+        updateMeta(id) { it.copy(trashedFrom = null) }
+        return move(id, folder)
+    }
+
+    fun deleteForever(id: String) {
         if (id.startsWith(CONTENT)) {
             DocumentsContract.deleteDocument(ctx.contentResolver, Uri.parse(id))
         } else {
             File(id).delete()
+        }
+    }
+
+    fun emptyTrash() {
+        for (note in listTrash()) deleteForever(note.id)
+    }
+
+    /** Notebook path of a note ("" for the top level). */
+    fun folderOf(id: String): String {
+        val tree = treeUri
+        if (tree == null || !id.startsWith(CONTENT)) {
+            val parent = File(id).parentFile ?: return ""
+            return parent.canonicalPath
+                .removePrefix(localDir.canonicalPath)
+                .trim('/')
+        }
+        return try {
+            val root = DocumentsContract.getTreeDocumentId(tree)
+            val doc = DocumentsContract.getDocumentId(Uri.parse(id))
+            if (doc.startsWith("$root/")) doc.removePrefix("$root/").substringBeforeLast('/', "") else ""
+        } catch (e: Exception) {
+            ""
         }
     }
 
@@ -158,8 +359,9 @@ class NoteStore(private val ctx: Context) {
                 val dir = File(localDir, ATTACH).apply { mkdirs() }
                 File(dir, name).outputStream().use { inp.copyTo(it) }
             } else {
-                val dirUri = attachmentDir(tree, create = true)
+                val dirId = folderDocId(tree, ATTACH, create = true)
                     ?: throw IllegalStateException("No attachments folder")
+                val dirUri = DocumentsContract.buildDocumentUriUsingTree(tree, dirId)
                 val file = DocumentsContract.createDocument(
                     ctx.contentResolver, dirUri, "application/octet-stream", name
                 ) ?: throw IllegalStateException("Cannot create $name")
@@ -177,80 +379,137 @@ class NoteStore(private val ctx: Context) {
             val f = File(File(localDir, ATTACH), name)
             return if (f.exists()) f.inputStream() else null
         }
-        val dir = attachmentDir(tree, create = false) ?: return null
-        val doc = findChild(tree, DocumentsContract.getDocumentId(dir), name) ?: return null
-        return ctx.contentResolver.openInputStream(doc)
-    }
-
-    private fun attachmentDir(tree: Uri, create: Boolean): Uri? {
-        val rootId = DocumentsContract.getTreeDocumentId(tree)
-        findChild(tree, rootId, ATTACH)?.let { return it }
-        if (!create) return null
-        val parent = DocumentsContract.buildDocumentUriUsingTree(tree, rootId)
-        return DocumentsContract.createDocument(
-            ctx.contentResolver, parent, DocumentsContract.Document.MIME_TYPE_DIR, ATTACH
+        val dirId = folderDocId(tree, ATTACH, create = false) ?: return null
+        val doc = children(tree, dirId).firstOrNull { !it.isDir && it.name == name } ?: return null
+        return ctx.contentResolver.openInputStream(
+            DocumentsContract.buildDocumentUriUsingTree(tree, doc.id)
         )
     }
 
-    private fun findChild(tree: Uri, parentId: String, name: String): Uri? {
-        val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId)
+    // ---------- Folder helpers ----------
+
+    private class Entry(val id: String, val name: String, val isDir: Boolean, val modified: Long)
+
+    private fun children(tree: Uri, parentId: String): List<Entry> {
+        val uri = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId)
         val projection = arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-            DocumentsContract.Document.COLUMN_DISPLAY_NAME
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_LAST_MODIFIED
         )
-        val cursor = ctx.contentResolver.query(children, projection, null, null, null) ?: return null
+        val out = ArrayList<Entry>()
+        val cursor = ctx.contentResolver.query(uri, projection, null, null, null) ?: return out
         try {
             while (cursor.moveToNext()) {
-                if (cursor.getString(1) == name) {
-                    return DocumentsContract.buildDocumentUriUsingTree(tree, cursor.getString(0))
-                }
+                out.add(
+                    Entry(
+                        cursor.getString(0),
+                        cursor.getString(1) ?: "",
+                        cursor.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR,
+                        cursor.getLong(3)
+                    )
+                )
             }
         } finally {
             cursor.close()
         }
-        return null
+        return out
     }
 
-    // ---------- Helpers ----------
+    /** Document id of the folder at a relative path, created when asked. */
+    private fun folderDocId(tree: Uri, path: String, create: Boolean): String? {
+        var current = DocumentsContract.getTreeDocumentId(tree)
+        for (part in path.split("/").filter { it.isNotBlank() }) {
+            val next = children(tree, current).firstOrNull { it.isDir && it.name == part }
+            current = when {
+                next != null -> next.id
+                create -> {
+                    val parentUri = DocumentsContract.buildDocumentUriUsingTree(tree, current)
+                    val made = DocumentsContract.createDocument(
+                        ctx.contentResolver, parentUri,
+                        DocumentsContract.Document.MIME_TYPE_DIR, part
+                    ) ?: return null
+                    DocumentsContract.getDocumentId(made)
+                }
+                else -> return null
+            }
+        }
+        return current
+    }
 
-    private fun create(name: String): String {
+    private fun displayName(uri: Uri): String? {
+        val cursor = ctx.contentResolver.query(
+            uri, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null
+        ) ?: return null
+        try {
+            return if (cursor.moveToFirst()) cursor.getString(0) else null
+        } finally {
+            cursor.close()
+        }
+    }
+
+    private fun create(name: String, folder: String): String {
         val tree = treeUri
         if (tree == null) {
-            var file = File(localDir, name)
-            var n = 2
-            while (file.exists()) {
-                file = File(localDir, name.removeSuffix(MD) + " ($n)" + MD)
-                n++
-            }
+            val dir = File(localDir, folder).apply { mkdirs() }
+            val file = uniqueFile(dir, name)
             file.createNewFile()
             return file.absolutePath
         }
-        val parent = DocumentsContract.buildDocumentUriUsingTree(
-            tree, DocumentsContract.getTreeDocumentId(tree)
-        )
+        val parentId = folderDocId(tree, folder, create = true)
+            ?: throw IllegalStateException("Cannot open $folder")
+        val parent = DocumentsContract.buildDocumentUriUsingTree(tree, parentId)
         val uri = DocumentsContract.createDocument(
             ctx.contentResolver, parent, "application/octet-stream", name
         ) ?: throw IllegalStateException("Cannot create $name")
         return uri.toString()
     }
 
-    private fun toNote(id: String, name: String, text: String, modified: Long): Note {
-        val (title, body) = split(text)
+    private fun uniqueFile(dir: File, name: String): File {
+        var file = File(dir, name)
+        var n = 2
+        while (file.exists()) {
+            file = File(dir, name.removeSuffix(MD) + " ($n)" + MD)
+            n++
+        }
+        return file
+    }
+
+    private fun toNote(id: String, name: String, text: String, modified: Long, folder: String): Note {
+        val (meta, content) = NoteMeta.parse(text)
+        val (title, body) = split(content)
         val preview = body.lineSequence()
             .map { it.trim() }
             .filter { it.isNotEmpty() }
             .take(3)
             .joinToString("\n")
-        return Note(id, title.ifBlank { name.removeSuffix(MD) }, preview, modified)
+        return Note(id, title.ifBlank { name.removeSuffix(MD) }, preview, modified, folder, meta, body)
     }
 
     companion object {
         private const val KEY_TREE = "tree_uri"
         private const val KEY_PREVIEW = "preview_lines"
         private const val KEY_FONT = "font_level"
+        private const val KEY_SORT = "sort_mode"
+        private const val KEY_GRID = "grid_layout"
+        private const val KEY_COLOR = "default_color"
         private const val MD = ".md"
         private const val CONTENT = "content://"
         private const val ATTACH = "attachments"
+        const val TRASH = ".trash"
+        private const val MAX_DEPTH = 8
+
+        private fun isSpecial(name: String): Boolean = name.startsWith(".") || name == ATTACH
+
+        private fun joinPath(parent: String, name: String): String =
+            if (parent.isEmpty()) name else "$parent/$name"
+
+        fun cleanPath(path: String): String =
+            path.split("/")
+                .map { it.replace(Regex("[\\\\:*?\"<>|\\p{Cntrl}]"), " ").trim() }
+                .filter { it.isNotBlank() && it != "." && it != ".." }
+                .joinToString("/")
 
         /** Splits "# Title" on the first line from the rest of the note. */
         fun split(text: String): Pair<String, String> {
