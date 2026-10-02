@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Impor dan ekspor -->
+    <string name="menu_import">Impor…</string>
+    <string name="menu_export_all">Ekspor semua catatan (ZIP)…</string>
+    <string name="menu_backup">Cadangan otomatis…</string>
+    <string name="import_working">Sedang mengimpor…</string>
+    <string name="import_done">Catatan diimpor: %1$d</string>
+    <string name="import_none">Tidak ada catatan di berkas yang dipilih.</string>
+    <string name="import_failed">Berkas ini tidak bisa diimpor.</string>
+    <string name="export_working">Sedang mengekspor…</string>
+    <string name="export_done">Ekspor selesai</string>
+    <string name="export_failed">Catatan tidak bisa diekspor.</string>
+
+    <!-- Ekspor satu catatan -->
+    <string name="export_note">Ekspor…</string>
+    <string name="export_md">Berkas Markdown (.md)</string>
+    <string name="export_html">Halaman web (.html)</string>
+    <string name="export_pdf">PDF (cetak, lalu Simpan sebagai PDF)</string>
+    <string name="export_saved">Tersimpan</string>
+
+    <!-- Cadangan otomatis -->
+    <string name="backup_title">Cadangan otomatis</string>
+    <string name="backup_off_desc">Simpan cadangan ZIP harian berisi semua catatan di folder pilihan Anda. Cadangan dibuat saat OmniNote dibuka dan cadangan terakhir sudah lebih dari sehari. Tujuh cadangan terbaru disimpan.</string>
+    <string name="backup_on_desc">Folder: %1$s\nCadangan terakhir: %2$s\n\nCadangan dibuat sekali sehari saat OmniNote dibuka. Tujuh cadangan terbaru disimpan.</string>
+    <string name="backup_never">belum pernah</string>
+    <string name="backup_choose">Pilih folder</string>
+    <string name="backup_change">Ganti folder</string>
+    <string name="backup_now">Cadangkan sekarang</string>
+    <string name="backup_turn_off">Matikan</string>
+    <string name="backup_done">Cadangan tersimpan</string>
+    <string name="backup_failed">Cadangan gagal</string>
+
+    <!-- Salin catatan ke folder baru -->
+    <string name="copy_notes_title">Salin catatan Anda?</string>
+    <string name="copy_notes_msg">Ada %1$d catatan di lokasi sebelumnya. Salin ke lokasi baru? Catatan aslinya tetap di tempatnya.</string>
+    <string name="copy_notes_yes">Salin</string>
+    <string name="copy_notes_no">Jangan salin</string>
+    <string name="copy_done">Berkas disalin: %1$d</string>
+</resources>
