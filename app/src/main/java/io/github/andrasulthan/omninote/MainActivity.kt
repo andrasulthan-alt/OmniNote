@@ -2,6 +2,7 @@ package io.github.andrasulthan.omninote
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -12,6 +13,8 @@ import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.text.Editable
 import android.text.InputType
 import android.text.TextUtils
@@ -54,6 +57,13 @@ class MainActivity : Activity() {
     private lateinit var recentRow: LinearLayout
     private val notesAdapter = NotesAdapter()
     private val io = Executors.newSingleThreadExecutor()
+    private val handler = Handler(Looper.getMainLooper())
+    private val refresher = object : Runnable {
+        override fun run() {
+            if (selected.isEmpty()) reload()
+            handler.postDelayed(this, REFRESH_MS)
+        }
+    }
 
     private var allNotes: List<Note> = emptyList()
     private var trashNotes: List<Note> = emptyList()
@@ -178,7 +188,7 @@ class MainActivity : Activity() {
             setPadding(0, Ui.dp(context, 4f), 0, small)
         }
 
-        // Filter chips: All, notebooks, tags, Archive, Trash
+        // Filter chips: All, Conflicts, notebooks, tags, Archive, Trash
         chipRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val chipScroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
@@ -244,10 +254,18 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         reload()
+        handler.removeCallbacks(refresher)
+        handler.postDelayed(refresher, REFRESH_MS)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        handler.removeCallbacks(refresher)
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        handler.removeCallbacks(refresher)
         io.shutdown()
     }
 
@@ -276,6 +294,7 @@ class MainActivity : Activity() {
             getString(R.string.folder_named, name)
         }
         grid.numColumns = if (store.gridLayout) 2 else 1
+        if (io.isShutdown) return
         io.execute {
             var failed = false
             val notes = try {
@@ -317,6 +336,7 @@ class MainActivity : Activity() {
         val base = when {
             filter == FILTER_TRASH -> trashNotes
             filter == FILTER_ARCHIVE -> allNotes.filter { it.meta.archived }
+            filter == FILTER_CONFLICTS -> allNotes.filter { it.isConflict }
             filter.startsWith(PREFIX_BOOK) -> {
                 val book = filter.removePrefix(PREFIX_BOOK)
                 allNotes.filter { !it.meta.archived && inNotebook(it, book) }
@@ -353,13 +373,16 @@ class MainActivity : Activity() {
         val tags = allNotes.flatMap { it.meta.tags }
             .distinctBy { it.lowercase() }
             .sortedWith(String.CASE_INSENSITIVE_ORDER)
+        val conflicts = allNotes.count { it.isConflict }
         val keys = mutableListOf(FILTER_ALL, FILTER_ARCHIVE, FILTER_TRASH)
+        if (conflicts > 0) keys.add(FILTER_CONFLICTS)
         keys.addAll(notebooks.map { PREFIX_BOOK + it })
         keys.addAll(tags.map { PREFIX_TAG + it })
         if (filter !in keys) filter = FILTER_ALL
 
         chipRow.removeAllViews()
         addChip(getString(R.string.filter_all), FILTER_ALL, allNotes.count { !it.meta.archived })
+        if (conflicts > 0) addChip("⚠ " + getString(R.string.filter_conflicts), FILTER_CONFLICTS, conflicts)
         for (book in notebooks) {
             addChip(book, PREFIX_BOOK + book, allNotes.count { !it.meta.archived && inNotebook(it, book) })
         }
@@ -710,10 +733,11 @@ class MainActivity : Activity() {
         menu.add(0, MENU_FONT, 6, R.string.menu_font)
         menu.add(0, MENU_APP_LOCK, 7, R.string.menu_app_lock)
         menu.add(0, MENU_VAULT, 8, R.string.menu_vault)
-        menu.add(0, MENU_FOLDER, 9, R.string.menu_choose_folder)
-        if (store.treeUri != null) menu.add(0, MENU_INTERNAL, 10, R.string.menu_internal)
+        menu.add(0, MENU_SYNC, 9, R.string.menu_sync)
+        menu.add(0, MENU_FOLDER, 10, R.string.menu_choose_folder)
+        if (store.treeUri != null) menu.add(0, MENU_INTERNAL, 11, R.string.menu_internal)
         if (filter == FILTER_TRASH && trashNotes.isNotEmpty()) {
-            menu.add(0, MENU_EMPTY_TRASH, 11, R.string.empty_trash)
+            menu.add(0, MENU_EMPTY_TRASH, 12, R.string.empty_trash)
         }
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
@@ -733,7 +757,8 @@ class MainActivity : Activity() {
                 MENU_FONT -> chooseFont()
                 MENU_APP_LOCK -> chooseAppLock()
                 MENU_VAULT -> vaultMenu()
-                MENU_FOLDER -> startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_FOLDER)
+                MENU_SYNC -> showSyncGuide()
+                MENU_FOLDER -> chooseFolder()
                 MENU_INTERNAL -> {
                     store.treeUri = null
                     filter = FILTER_ALL
@@ -745,6 +770,37 @@ class MainActivity : Activity() {
             true
         }
         popup.show()
+    }
+
+    private fun chooseFolder() {
+        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_FOLDER)
+    }
+
+    /** A short guide to syncing the notes folder with Syncthing. */
+    private fun showSyncGuide() {
+        val message = if (store.treeUri == null) {
+            getString(R.string.sync_internal_warning) + "\n\n" + getString(R.string.sync_steps)
+        } else {
+            getString(R.string.sync_steps)
+        }
+        val launch = SYNCTHING_PACKAGES.firstNotNullOfOrNull { packageManager.getLaunchIntentForPackage(it) }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.sync_title)
+            .setMessage(message)
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton(R.string.sync_choose_folder) { _, _ -> chooseFolder() }
+            .setNeutralButton(if (launch != null) R.string.sync_open else R.string.sync_get) { _, _ ->
+                try {
+                    if (launch != null) {
+                        startActivity(launch)
+                    } else {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(SYNCTHING_PAGE)))
+                    }
+                } catch (e: ActivityNotFoundException) {
+                    Toast.makeText(this, R.string.error_link, Toast.LENGTH_SHORT).show()
+                }
+            }
+            .show()
     }
 
     private fun chooseAppLock() {
@@ -927,6 +983,7 @@ class MainActivity : Activity() {
                 if (isLocked || lines == 0 || note.preview.isEmpty()) View.GONE else View.VISIBLE
 
             val parts = ArrayList<String>()
+            if (note.isConflict) parts.add("⚠ " + getString(R.string.conflict_label).uppercase())
             if (note.meta.pinned) parts.add(getString(R.string.pinned).uppercase())
             if (note.meta.remind > System.currentTimeMillis()) {
                 parts.add(
@@ -1002,11 +1059,13 @@ class MainActivity : Activity() {
     companion object {
         private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         private const val REQ_FOLDER = 42
+        private const val REFRESH_MS = 15_000L
         private const val KEY_FILTER = "filter"
         private const val KEY_RECENT = "recent_searches"
         private const val FILTER_ALL = "all"
         private const val FILTER_ARCHIVE = "archive"
         private const val FILTER_TRASH = "trash"
+        private const val FILTER_CONFLICTS = "conflicts"
         private const val PREFIX_BOOK = "book:"
         private const val PREFIX_TAG = "tag:"
         private const val MENU_NOTEBOOK = 1
@@ -1021,5 +1080,11 @@ class MainActivity : Activity() {
         private const val MENU_TASKS = 10
         private const val MENU_APP_LOCK = 11
         private const val MENU_VAULT = 12
+        private const val MENU_SYNC = 13
+        private const val SYNCTHING_PAGE = "https://f-droid.org/packages/com.github.catfriend1.syncthingandroid/"
+        private val SYNCTHING_PACKAGES = listOf(
+            "com.github.catfriend1.syncthingandroid",
+            "com.nutomic.syncthingandroid"
+        )
     }
 }
