@@ -63,10 +63,12 @@
     <string name="color_gray">Gray</string>
     <string name="tags">Tags…</string>
     <string name="tags_hint">Tags, separated by commas</string>
+    <string name="add_tags">Add tags…</string>
     <string name="move">Move to notebook…</string>
     <string name="top_level">No notebook</string>
     <string name="notebook_hint">Notebook name (use / for sub-notebooks)</string>
     <string name="save">Save</string>
+    <string name="duplicate_title">A note with this title already exists.</string>
 
     <!-- Trash and selection -->
     <string name="restore">Restore</string>
@@ -75,6 +77,12 @@
     <string name="empty_trash">Empty trash</string>
     <string name="moved_to_trash">Moved to trash</string>
     <string name="selected_count">%1$d selected</string>
+    <string name="select_all">Select all</string>
+    <string name="close_selection">Close selection</string>
+    <string name="merge">Merge</string>
+    <string name="merge_confirm">Merge %1$d notes into one? The originals go to the trash.</string>
+    <string name="merge_need_two">Select at least two notes to merge.</string>
+    <string name="delete_selected_confirm">Move %1$d notes to the trash?</string>
 
     <!-- Editor -->
     <string name="title_hint">Title</string>
