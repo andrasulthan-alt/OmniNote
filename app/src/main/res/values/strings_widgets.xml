@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Widgets -->
+    <string name="widget_quick_label">OmniNote quick note</string>
+    <string name="widget_note_label">OmniNote note</string>
+    <string name="widget_new_note">+ NOTE</string>
+    <string name="widget_new_list">☐ LIST</string>
+    <string name="widget_pick">Pick a note for this widget</string>
+    <string name="widget_note_missing">This note was moved or deleted. Tap to open OmniNote.</string>
+    <string name="widget_empty_note">Empty note</string>
+
+    <!-- Quick Settings tile -->
+    <string name="tile_label">New note</string>
+
+    <!-- Launcher shortcuts -->
+    <string name="shortcut_new_note">New note</string>
+    <string name="shortcut_new_list">New checklist</string>
+    <string name="shortcut_tasks">Tasks</string>
+</resources>
