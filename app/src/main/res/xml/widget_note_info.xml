@@ -7,6 +7,7 @@
     android:minHeight="110dp"
     android:minResizeWidth="110dp"
     android:minResizeHeight="60dp"
+    android:previewImage="@drawable/widget_note_preview"
     android:previewLayout="@layout/widget_note"
     android:resizeMode="horizontal|vertical"
     android:targetCellWidth="2"
