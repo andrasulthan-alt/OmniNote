@@ -60,10 +60,12 @@
     <string name="color_gray">Abu-abu</string>
     <string name="tags">Tag…</string>
     <string name="tags_hint">Tag, pisahkan dengan koma</string>
+    <string name="add_tags">Tambah tag…</string>
     <string name="move">Pindahkan ke notebook…</string>
     <string name="top_level">Tanpa notebook</string>
     <string name="notebook_hint">Nama notebook (pakai / untuk sub-notebook)</string>
     <string name="save">Simpan</string>
+    <string name="duplicate_title">Sudah ada catatan dengan judul ini.</string>
 
     <!-- Sampah dan pilihan -->
     <string name="restore">Pulihkan</string>
@@ -72,6 +74,12 @@
     <string name="empty_trash">Kosongkan sampah</string>
     <string name="moved_to_trash">Dipindahkan ke sampah</string>
     <string name="selected_count">%1$d dipilih</string>
+    <string name="select_all">Pilih semua</string>
+    <string name="close_selection">Tutup pilihan</string>
+    <string name="merge">Gabungkan</string>
+    <string name="merge_confirm">Gabungkan %1$d catatan jadi satu? Catatan aslinya masuk sampah.</string>
+    <string name="merge_need_two">Pilih minimal dua catatan untuk digabungkan.</string>
+    <string name="delete_selected_confirm">Pindahkan %1$d catatan ke sampah?</string>
 
     <!-- Editor -->
     <string name="title_hint">Judul</string>
