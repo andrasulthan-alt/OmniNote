@@ -4,13 +4,33 @@
     <string name="new_note">Catatan baru</string>
     <string name="more">Opsi lainnya</string>
     <string name="back">Kembali</string>
+    <string name="search">Cari</string>
+    <string name="search_hint">Cari catatan</string>
     <string name="folder_internal">Tersimpan di HP ini</string>
     <string name="folder_named">Folder: %1$s</string>
     <string name="menu_choose_folder">Pilih folder catatan…</string>
     <string name="menu_internal">Simpan di HP ini</string>
     <string name="menu_preview">Baris pratinjau…</string>
     <string name="menu_font">Ukuran teks…</string>
+    <string name="menu_sort">Urutkan…</string>
+    <string name="menu_grid">Tampilan grid</string>
+    <string name="menu_list">Tampilan daftar</string>
+    <string name="menu_default_color">Warna bawaan…</string>
+    <string name="menu_new_notebook">Notebook baru…</string>
     <string name="empty">Belum ada catatan.\nKetuk + untuk menulis.</string>
+    <string name="empty_filtered">Tidak ada catatan di sini.</string>
+
+    <!-- Filter -->
+    <string name="filter_all">Semua</string>
+    <string name="filter_archive">Arsip</string>
+    <string name="filter_trash">Sampah</string>
+    <string name="pinned">Disematkan</string>
+
+    <!-- Urutan -->
+    <string name="sort_modified">Terakhir diubah</string>
+    <string name="sort_newest">Terbaru dibuat</string>
+    <string name="sort_oldest">Terlama dibuat</string>
+    <string name="sort_title">Judul A–Z</string>
 
     <!-- Baris pratinjau -->
     <string name="preview_none">Judul saja</string>
@@ -23,6 +43,35 @@
     <string name="font_normal">Normal</string>
     <string name="font_large">Besar</string>
     <string name="font_huge">Sangat besar</string>
+
+    <!-- Properti catatan -->
+    <string name="pin">Sematkan</string>
+    <string name="unpin">Lepas sematan</string>
+    <string name="archive">Arsipkan</string>
+    <string name="unarchive">Keluarkan dari arsip</string>
+    <string name="color">Warna…</string>
+    <string name="color_none">Tanpa warna</string>
+    <string name="color_red">Merah</string>
+    <string name="color_orange">Oranye</string>
+    <string name="color_yellow">Kuning</string>
+    <string name="color_green">Hijau</string>
+    <string name="color_blue">Biru</string>
+    <string name="color_purple">Ungu</string>
+    <string name="color_gray">Abu-abu</string>
+    <string name="tags">Tag…</string>
+    <string name="tags_hint">Tag, pisahkan dengan koma</string>
+    <string name="move">Pindahkan ke notebook…</string>
+    <string name="top_level">Tanpa notebook</string>
+    <string name="notebook_hint">Nama notebook (pakai / untuk sub-notebook)</string>
+    <string name="save">Simpan</string>
+
+    <!-- Sampah dan pilihan -->
+    <string name="restore">Pulihkan</string>
+    <string name="delete_forever">Hapus permanen</string>
+    <string name="delete_forever_confirm">Hapus permanen? Tindakan ini tidak bisa dibatalkan.</string>
+    <string name="empty_trash">Kosongkan sampah</string>
+    <string name="moved_to_trash">Dipindahkan ke sampah</string>
+    <string name="selected_count">%1$d dipilih</string>
 
     <!-- Editor -->
     <string name="title_hint">Judul</string>
@@ -57,11 +106,12 @@
 
     <!-- Dialog dan pesan kesalahan -->
     <string name="delete">Hapus</string>
-    <string name="delete_confirm">Hapus catatan ini?</string>
+    <string name="delete_confirm">Pindahkan catatan ini ke sampah?</string>
     <string name="cancel">Batal</string>
     <string name="error_open">Catatan ini tidak bisa dibuka.</string>
     <string name="error_save">Catatan ini tidak bisa disimpan.</string>
     <string name="error_folder">Folder catatan tidak bisa dibaca.</string>
     <string name="error_link">Tidak ada aplikasi untuk membuka tautan ini.</string>
     <string name="error_image">Gambar ini tidak bisa ditambahkan.</string>
+    <string name="error_move">Catatan ini tidak bisa dipindahkan.</string>
 </resources>
