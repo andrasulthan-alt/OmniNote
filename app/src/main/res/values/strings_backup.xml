@@ -8,6 +8,7 @@
     <string name="import_done">Notes imported: %1$d</string>
     <string name="import_none">No notes were found in the chosen files.</string>
     <string name="import_failed">Could not import these files.</string>
+    <string name="import_scarlet_image">🖼 Image from Scarlet Notes (not included in its backup file)</string>
     <string name="export_working">Exporting…</string>
     <string name="export_done">Export finished</string>
     <string name="export_failed">Could not export the notes.</string>
