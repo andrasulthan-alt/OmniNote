@@ -39,6 +39,9 @@
     <string name="word_count">%1$d words · %2$d characters</string>
     <string name="link_text">link text</string>
     <string name="table_col">Column</string>
+    <string name="pick_note">Link to a note</string>
+    <string name="no_other_notes">There are no other notes to link yet.</string>
+    <string name="image_missing">[image not found]</string>
 
     <!-- Toolbar descriptions -->
     <string name="tool_heading">Heading</string>
@@ -50,6 +53,8 @@
     <string name="tool_task">Checklist</string>
     <string name="tool_quote">Quote</string>
     <string name="tool_link">Link</string>
+    <string name="tool_note_link">Link to note</string>
+    <string name="tool_image">Image</string>
     <string name="tool_table">Table</string>
     <string name="tool_rule">Divider</string>
 
@@ -61,4 +66,5 @@
     <string name="error_save">Could not save this note.</string>
     <string name="error_folder">Could not read the notes folder.</string>
     <string name="error_link">No app can open this link.</string>
+    <string name="error_image">Could not add this image.</string>
 </resources>
