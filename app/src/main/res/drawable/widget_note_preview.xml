@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="160dp"
+    android:height="160dp"
+    android:viewportWidth="200"
+    android:viewportHeight="200">
+
+    <!-- Black card with a thin grey edge -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M25,1 H175 A24,24 0 0 1 199,25 V175 A24,24 0 0 1 175,199 H25 A24,24 0 0 1 1,175 V25 A24,24 0 0 1 25,1 Z"
+        android:strokeColor="#FF333333"
+        android:strokeWidth="2" />
+
+    <!-- Red dot -->
+    <path
+        android:fillColor="#FFD71921"
+        android:pathData="M24,34 a4,4 0 1 0 8,0 a4,4 0 1 0 -8,0 z" />
+
+    <!-- Title -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M44,34 H128"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeWidth="8" />
+
+    <!-- Text lines -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M26,64 H170 M26,82 H156 M26,100 H174 M26,118 H112"
+        android:strokeColor="#80FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeWidth="5" />
+
+    <!-- Two checklist boxes -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M24,138 H36 V150 H24 Z M24,162 H36 V174 H24 Z M27,168 L29.5,171 L34,165"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="2" />
+
+    <!-- Checklist text -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M46,144 H150 M46,168 H118"
+        android:strokeColor="#80FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeWidth="5" />
+</vector>
