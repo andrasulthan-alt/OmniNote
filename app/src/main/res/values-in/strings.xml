@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Beranda -->
     <string name="new_note">Catatan baru</string>
     <string name="more">Opsi lainnya</string>
     <string name="back">Kembali</string>
@@ -7,13 +8,54 @@
     <string name="folder_named">Folder: %1$s</string>
     <string name="menu_choose_folder">Pilih folder catatan…</string>
     <string name="menu_internal">Simpan di HP ini</string>
+    <string name="menu_preview">Baris pratinjau…</string>
+    <string name="menu_font">Ukuran teks…</string>
     <string name="empty">Belum ada catatan.\nKetuk + untuk menulis.</string>
+
+    <!-- Baris pratinjau -->
+    <string name="preview_none">Judul saja</string>
+    <string name="preview_1">1 baris</string>
+    <string name="preview_2">2 baris</string>
+    <string name="preview_3">3 baris</string>
+
+    <!-- Ukuran teks -->
+    <string name="font_small">Kecil</string>
+    <string name="font_normal">Normal</string>
+    <string name="font_large">Besar</string>
+    <string name="font_huge">Sangat besar</string>
+
+    <!-- Editor -->
     <string name="title_hint">Judul</string>
     <string name="body_hint">Mulai menulis…</string>
+    <string name="mode_read">Baca</string>
+    <string name="mode_edit">Edit</string>
+    <string name="share">Bagikan</string>
+    <string name="share_via">Bagikan catatan lewat</string>
+    <string name="toc">Daftar isi</string>
+    <string name="toc_empty">Catatan ini belum punya judul bagian.</string>
+    <string name="word_count">%1$d kata · %2$d karakter</string>
+    <string name="link_text">teks tautan</string>
+    <string name="table_col">Kolom</string>
+
+    <!-- Keterangan toolbar -->
+    <string name="tool_heading">Judul bagian</string>
+    <string name="tool_bold">Tebal</string>
+    <string name="tool_italic">Miring</string>
+    <string name="tool_strike">Coret</string>
+    <string name="tool_code">Kode</string>
+    <string name="tool_bullet">Daftar berpoin</string>
+    <string name="tool_task">Daftar centang</string>
+    <string name="tool_quote">Kutipan</string>
+    <string name="tool_link">Tautan</string>
+    <string name="tool_table">Tabel</string>
+    <string name="tool_rule">Garis pemisah</string>
+
+    <!-- Dialog dan pesan kesalahan -->
     <string name="delete">Hapus</string>
     <string name="delete_confirm">Hapus catatan ini?</string>
     <string name="cancel">Batal</string>
     <string name="error_open">Catatan ini tidak bisa dibuka.</string>
     <string name="error_save">Catatan ini tidak bisa disimpan.</string>
     <string name="error_folder">Folder catatan tidak bisa dibaca.</string>
+    <string name="error_link">Tidak ada aplikasi untuk membuka tautan ini.</string>
 </resources>
