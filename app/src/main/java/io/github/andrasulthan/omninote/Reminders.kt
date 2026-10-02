@@ -15,6 +15,7 @@ import android.os.Build
 /**
  * Reminders and notes shown in the notification panel (an idea from Scarlet Notes).
  * Uses the normal alarm, so no "exact alarm" permission is needed.
+ * Locked notes never show their text in a notification.
  */
 object Reminders {
 
@@ -90,17 +91,17 @@ object Reminders {
     fun showReminder(ctx: Context, id: String, title: String, text: String) {
         if (!canNotify(ctx)) return
         ensureChannels(ctx)
-        val notification = Notification.Builder(ctx, CHANNEL_REMIND)
+        val builder = Notification.Builder(ctx, CHANNEL_REMIND)
             .setSmallIcon(android.R.drawable.ic_popup_reminder)
             .setContentTitle(title)
-            .setContentText(text)
-            .setStyle(Notification.BigTextStyle().bigText(text))
             .setColor(Ui.RED)
             .setCategory(Notification.CATEGORY_REMINDER)
             .setContentIntent(openNote(ctx, id, code(id)))
             .setAutoCancel(true)
-            .build()
-        manager(ctx).notify(code(id), notification)
+        if (text.isNotBlank()) {
+            builder.setContentText(text).setStyle(Notification.BigTextStyle().bigText(text))
+        }
+        manager(ctx).notify(code(id), builder.build())
     }
 
     // ---------- Notes shown in the notification panel ----------
@@ -149,8 +150,15 @@ object Reminders {
         val now = System.currentTimeMillis()
         val pinned = pinnedIds(ctx)
         for (note in notes) {
-            if (note.meta.remind > now) schedule(ctx, note.id, note.title, note.meta.remind)
-            if (note.id in pinned) pinNotification(ctx, note.id, note.title, Markdown.plain(note.preview))
+            val title = if (note.meta.vault) ctx.getString(R.string.locked_note) else note.title
+            if (note.meta.remind > now) schedule(ctx, note.id, title, note.meta.remind)
+            if (note.id in pinned) {
+                if (note.meta.vault) {
+                    unpinNotification(ctx, note.id)
+                } else {
+                    pinNotification(ctx, note.id, note.title, Markdown.plain(note.preview))
+                }
+            }
         }
     }
 }
@@ -164,17 +172,30 @@ class ReminderReceiver : BroadcastReceiver() {
         Thread {
             try {
                 val store = NoteStore(context)
-                val text = try {
-                    val (_, content) = NoteMeta.parse(store.read(id))
-                    Markdown.plain(NoteStore.split(content).second.trim().take(300))
+                val raw = try {
+                    store.read(id)
                 } catch (e: Exception) {
                     ""
                 }
-                Reminders.showReminder(context, id, title.ifBlank { context.getString(R.string.app_name) }, text)
-                try {
-                    store.updateMeta(id) { it.copy(remind = 0L) }
-                } catch (e: Exception) {
-                    // The note may have moved; the reminder was still shown.
+                val isLocked = Vault.isLocked(raw)
+                val text = if (isLocked) {
+                    ""
+                } else {
+                    val (_, content) = NoteMeta.parse(raw)
+                    Markdown.plain(NoteStore.split(content).second.trim().take(300))
+                }
+                val shownTitle = when {
+                    isLocked -> "🔒 " + context.getString(R.string.locked_note)
+                    title.isNotBlank() -> title
+                    else -> context.getString(R.string.app_name)
+                }
+                Reminders.showReminder(context, id, shownTitle, text)
+                if (!isLocked) {
+                    try {
+                        store.updateMeta(id) { it.copy(remind = 0L) }
+                    } catch (e: Exception) {
+                        // The note may have moved; the reminder was still shown.
+                    }
                 }
             } finally {
                 pending.finish()
