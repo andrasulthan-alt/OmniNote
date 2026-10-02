@@ -330,9 +330,11 @@ class MainActivity : Activity() {
         val q = query.trim()
         if (q.isEmpty()) return base
         return base.filter { note ->
-            note.title.contains(q, ignoreCase = true) ||
-                note.body.contains(q, ignoreCase = true) ||
-                note.meta.tags.any { it.contains(q, ignoreCase = true) }
+            !note.meta.vault && (
+                note.title.contains(q, ignoreCase = true) ||
+                    note.body.contains(q, ignoreCase = true) ||
+                    note.meta.tags.any { it.contains(q, ignoreCase = true) }
+                )
         }
     }
 
@@ -422,7 +424,7 @@ class MainActivity : Activity() {
             addAction(R.string.restore) { restoreSelected() }
             addAction(R.string.delete_forever) { deleteSelectedForever() }
         } else {
-            val notes = selectedNotes()
+            val notes = selectedNotes().filter { !it.meta.vault }
             addAction(R.string.select_all) { selectAll() }
             addAction(if (notes.any { !it.meta.pinned }) R.string.pin else R.string.unpin) { pinSelected() }
             addAction(R.string.add_tags) { tagSelected() }
@@ -468,13 +470,17 @@ class MainActivity : Activity() {
     }
 
     private fun pinSelected() {
-        val pin = selectedNotes().any { !it.meta.pinned }
-        finishBulk { notes -> notes.forEach { n -> store.updateMeta(n.id) { it.copy(pinned = pin) } } }
+        val pin = selectedNotes().filter { !it.meta.vault }.any { !it.meta.pinned }
+        finishBulk { notes ->
+            notes.filter { !it.meta.vault }.forEach { n -> store.updateMeta(n.id) { it.copy(pinned = pin) } }
+        }
     }
 
     private fun archiveSelected() {
-        val archive = selectedNotes().any { !it.meta.archived }
-        finishBulk { notes -> notes.forEach { n -> store.updateMeta(n.id) { it.copy(archived = archive) } } }
+        val archive = selectedNotes().filter { !it.meta.vault }.any { !it.meta.archived }
+        finishBulk { notes ->
+            notes.filter { !it.meta.vault }.forEach { n -> store.updateMeta(n.id) { it.copy(archived = archive) } }
+        }
     }
 
     private fun tagSelected() {
@@ -491,7 +497,7 @@ class MainActivity : Activity() {
                 val added = NoteMeta.splitList(input.text.toString())
                 if (added.isNotEmpty()) {
                     finishBulk { notes ->
-                        notes.forEach { n ->
+                        notes.filter { !it.meta.vault }.forEach { n ->
                             store.updateMeta(n.id) { m ->
                                 m.copy(tags = (m.tags + added).distinctBy { it.lowercase() })
                             }
@@ -524,30 +530,34 @@ class MainActivity : Activity() {
 
     /** Joins the selected notes into one new note; the originals go to the trash. */
     private fun mergeSelected() {
-        val notes = selectedNotes()
+        val notes = selectedNotes().filter { !it.meta.vault }
         if (notes.size < 2) {
             Toast.makeText(this, R.string.merge_need_two, Toast.LENGTH_SHORT).show()
             return
         }
+        val ids = notes.map { it.id }.toSet()
         AlertDialog.Builder(this)
             .setMessage(getString(R.string.merge_confirm, notes.size))
             .setNegativeButton(R.string.cancel, null)
             .setPositiveButton(R.string.merge) { _, _ ->
-                finishBulk { list ->
-                    val first = list.first()
-                    val sections = list.joinToString("\n\n---\n\n") { n ->
-                        "## ${n.title}\n\n${n.body.trim()}"
-                    }
-                    val meta = NoteMeta(
-                        created = System.currentTimeMillis(),
-                        color = first.meta.color,
-                        tags = list.flatMap { it.meta.tags }.distinctBy { it.lowercase() }
-                    )
-                    val text = NoteMeta.build(meta, NoteStore.join(first.title, sections))
-                    store.save(null, first.title, text, first.folder)
-                    list.forEach {
-                        forget(it)
-                        store.delete(it.id)
+                finishBulk { all ->
+                    val list = all.filter { it.id in ids }
+                    if (list.size >= 2) {
+                        val first = list.first()
+                        val sections = list.joinToString("\n\n---\n\n") { n ->
+                            "## ${n.title}\n\n${n.body.trim()}"
+                        }
+                        val meta = NoteMeta(
+                            created = System.currentTimeMillis(),
+                            color = first.meta.color,
+                            tags = list.flatMap { it.meta.tags }.distinctBy { it.lowercase() }
+                        )
+                        val text = NoteMeta.build(meta, NoteStore.join(first.title, sections))
+                        store.save(null, first.title, text, first.folder)
+                        list.forEach {
+                            forget(it)
+                            store.delete(it.id)
+                        }
                     }
                 }
             }
@@ -698,10 +708,12 @@ class MainActivity : Activity() {
         menu.add(0, MENU_COLOR, 4, R.string.menu_default_color)
         menu.add(0, MENU_PREVIEW, 5, R.string.menu_preview)
         menu.add(0, MENU_FONT, 6, R.string.menu_font)
-        menu.add(0, MENU_FOLDER, 7, R.string.menu_choose_folder)
-        if (store.treeUri != null) menu.add(0, MENU_INTERNAL, 8, R.string.menu_internal)
+        menu.add(0, MENU_APP_LOCK, 7, R.string.menu_app_lock)
+        menu.add(0, MENU_VAULT, 8, R.string.menu_vault)
+        menu.add(0, MENU_FOLDER, 9, R.string.menu_choose_folder)
+        if (store.treeUri != null) menu.add(0, MENU_INTERNAL, 10, R.string.menu_internal)
         if (filter == FILTER_TRASH && trashNotes.isNotEmpty()) {
-            menu.add(0, MENU_EMPTY_TRASH, 9, R.string.empty_trash)
+            menu.add(0, MENU_EMPTY_TRASH, 11, R.string.empty_trash)
         }
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
@@ -719,10 +731,13 @@ class MainActivity : Activity() {
                 MENU_COLOR -> chooseDefaultColor()
                 MENU_PREVIEW -> choosePreview()
                 MENU_FONT -> chooseFont()
+                MENU_APP_LOCK -> chooseAppLock()
+                MENU_VAULT -> vaultMenu()
                 MENU_FOLDER -> startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_FOLDER)
                 MENU_INTERNAL -> {
                     store.treeUri = null
                     filter = FILTER_ALL
+                    Vault.close()
                     reload()
                 }
                 MENU_EMPTY_TRASH -> confirmEmptyTrash()
@@ -730,6 +745,44 @@ class MainActivity : Activity() {
             true
         }
         popup.show()
+    }
+
+    private fun chooseAppLock() {
+        val options = arrayOf(
+            getString(R.string.app_lock_off),
+            getString(R.string.app_lock_now),
+            getString(R.string.app_lock_1),
+            getString(R.string.app_lock_5)
+        )
+        AlertDialog.Builder(this)
+            .setTitle(R.string.menu_app_lock)
+            .setSingleChoiceItems(options, AppLock.mode(this)) { dialog, which ->
+                if (which != 0 && !AppLock.canUse(this)) {
+                    Toast.makeText(this, R.string.lock_no_secure, Toast.LENGTH_LONG).show()
+                } else {
+                    AppLock.setMode(this, which)
+                }
+                dialog.dismiss()
+            }
+            .show()
+    }
+
+    private fun vaultMenu() {
+        when {
+            !Vault.isSetUp(store) -> VaultUi.setUp(this, store) { reload() }
+            Vault.isOpen() -> {
+                AlertDialog.Builder(this)
+                    .setTitle(R.string.menu_vault)
+                    .setItems(arrayOf(getString(R.string.vault_close))) { _, _ ->
+                        Vault.close()
+                        Toast.makeText(this, R.string.vault_closed, Toast.LENGTH_SHORT).show()
+                    }
+                    .show()
+            }
+            else -> VaultUi.open(this, store) {
+                Toast.makeText(this, R.string.vault_ready, Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     private fun chooseSort() {
@@ -821,6 +874,7 @@ class MainActivity : Activity() {
             )
             store.treeUri = uri
             filter = FILTER_ALL
+            Vault.close()
         } catch (e: SecurityException) {
             Toast.makeText(this, R.string.error_folder, Toast.LENGTH_LONG).show()
         }
@@ -843,6 +897,7 @@ class MainActivity : Activity() {
             val scale = store.fontScale()
             val lines = store.previewLines
             val isSelected = note.id in selected
+            val isLocked = note.meta.vault
 
             card.background = Ui.rounded(
                 p.surface,
@@ -853,7 +908,7 @@ class MainActivity : Activity() {
 
             val titleRow = card.getChildAt(0) as LinearLayout
             val dot = titleRow.getChildAt(0)
-            val colour = NoteMeta.colorValue(note.meta.color)
+            val colour = if (isLocked) null else NoteMeta.colorValue(note.meta.color)
             if (colour != null) {
                 dot.background = Ui.circle(colour)
                 dot.visibility = View.VISIBLE
@@ -861,7 +916,7 @@ class MainActivity : Activity() {
                 dot.visibility = View.GONE
             }
             val titleView = titleRow.getChildAt(1) as TextView
-            titleView.text = note.title
+            titleView.text = if (isLocked) "🔒 " + getString(R.string.locked_note) else note.title
             titleView.textSize = 16f * scale
 
             val preview = card.getChildAt(1) as TextView
@@ -869,7 +924,7 @@ class MainActivity : Activity() {
             preview.textSize = 13f * scale
             preview.maxLines = if (lines > 0) lines else 1
             preview.visibility =
-                if (lines == 0 || note.preview.isEmpty()) View.GONE else View.VISIBLE
+                if (isLocked || lines == 0 || note.preview.isEmpty()) View.GONE else View.VISIBLE
 
             val parts = ArrayList<String>()
             if (note.meta.pinned) parts.add(getString(R.string.pinned).uppercase())
@@ -884,7 +939,7 @@ class MainActivity : Activity() {
             parts.add(DateUtils.getRelativeTimeSpanString(note.modified).toString())
             val place = if (filter == FILTER_TRASH) note.meta.trashedFrom else note.folder
             if (!place.isNullOrBlank()) parts.add(place)
-            if (note.meta.tags.isNotEmpty()) parts.add(note.meta.tags.joinToString(" ") { "#$it" })
+            if (!isLocked && note.meta.tags.isNotEmpty()) parts.add(note.meta.tags.joinToString(" ") { "#$it" })
             (card.getChildAt(2) as TextView).text = parts.joinToString("  ·  ")
             return card
         }
@@ -964,5 +1019,7 @@ class MainActivity : Activity() {
         private const val MENU_INTERNAL = 8
         private const val MENU_EMPTY_TRASH = 9
         private const val MENU_TASKS = 10
+        private const val MENU_APP_LOCK = 11
+        private const val MENU_VAULT = 12
     }
 }
