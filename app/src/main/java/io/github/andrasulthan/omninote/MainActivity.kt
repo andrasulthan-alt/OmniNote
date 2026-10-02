@@ -461,6 +461,12 @@ class MainActivity : Activity() {
         runThenReload { work(notes) }
     }
 
+    /** Stops reminders and notifications of a note that leaves the list. */
+    private fun forget(note: Note) {
+        Reminders.cancel(this, note.id)
+        Reminders.unpinNotification(this, note.id)
+    }
+
     private fun pinSelected() {
         val pin = selectedNotes().any { !it.meta.pinned }
         finishBulk { notes -> notes.forEach { n -> store.updateMeta(n.id) { it.copy(pinned = pin) } } }
@@ -539,7 +545,10 @@ class MainActivity : Activity() {
                     )
                     val text = NoteMeta.build(meta, NoteStore.join(first.title, sections))
                     store.save(null, first.title, text, first.folder)
-                    list.forEach { store.delete(it.id) }
+                    list.forEach {
+                        forget(it)
+                        store.delete(it.id)
+                    }
                 }
             }
             .show()
@@ -551,7 +560,12 @@ class MainActivity : Activity() {
             .setMessage(getString(R.string.delete_selected_confirm, count))
             .setNegativeButton(R.string.cancel, null)
             .setPositiveButton(R.string.delete) { _, _ ->
-                finishBulk { notes -> notes.forEach { store.delete(it.id) } }
+                finishBulk { notes ->
+                    notes.forEach {
+                        forget(it)
+                        store.delete(it.id)
+                    }
+                }
             }
             .show()
     }
@@ -677,19 +691,21 @@ class MainActivity : Activity() {
     private fun showMenu(anchor: View) {
         val popup = PopupMenu(this, anchor)
         val menu = popup.menu
-        menu.add(0, MENU_NOTEBOOK, 0, R.string.menu_new_notebook)
-        menu.add(0, MENU_SORT, 1, R.string.menu_sort)
-        menu.add(0, MENU_LAYOUT, 2, if (store.gridLayout) R.string.menu_list else R.string.menu_grid)
-        menu.add(0, MENU_COLOR, 3, R.string.menu_default_color)
-        menu.add(0, MENU_PREVIEW, 4, R.string.menu_preview)
-        menu.add(0, MENU_FONT, 5, R.string.menu_font)
-        menu.add(0, MENU_FOLDER, 6, R.string.menu_choose_folder)
-        if (store.treeUri != null) menu.add(0, MENU_INTERNAL, 7, R.string.menu_internal)
+        menu.add(0, MENU_TASKS, 0, R.string.menu_tasks)
+        menu.add(0, MENU_NOTEBOOK, 1, R.string.menu_new_notebook)
+        menu.add(0, MENU_SORT, 2, R.string.menu_sort)
+        menu.add(0, MENU_LAYOUT, 3, if (store.gridLayout) R.string.menu_list else R.string.menu_grid)
+        menu.add(0, MENU_COLOR, 4, R.string.menu_default_color)
+        menu.add(0, MENU_PREVIEW, 5, R.string.menu_preview)
+        menu.add(0, MENU_FONT, 6, R.string.menu_font)
+        menu.add(0, MENU_FOLDER, 7, R.string.menu_choose_folder)
+        if (store.treeUri != null) menu.add(0, MENU_INTERNAL, 8, R.string.menu_internal)
         if (filter == FILTER_TRASH && trashNotes.isNotEmpty()) {
-            menu.add(0, MENU_EMPTY_TRASH, 8, R.string.empty_trash)
+            menu.add(0, MENU_EMPTY_TRASH, 9, R.string.empty_trash)
         }
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
+                MENU_TASKS -> startActivity(Intent(this, TasksActivity::class.java))
                 MENU_NOTEBOOK -> askNotebookName { path ->
                     filter = PREFIX_BOOK + path
                     runThenReload { store.createNotebook(path) }
@@ -857,6 +873,14 @@ class MainActivity : Activity() {
 
             val parts = ArrayList<String>()
             if (note.meta.pinned) parts.add(getString(R.string.pinned).uppercase())
+            if (note.meta.remind > System.currentTimeMillis()) {
+                parts.add(
+                    "⏰ " + DateUtils.formatDateTime(
+                        this@MainActivity, note.meta.remind,
+                        DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_SHOW_TIME or DateUtils.FORMAT_ABBREV_MONTH
+                    )
+                )
+            }
             parts.add(DateUtils.getRelativeTimeSpanString(note.modified).toString())
             val place = if (filter == FILTER_TRASH) note.meta.trashedFrom else note.folder
             if (!place.isNullOrBlank()) parts.add(place)
@@ -939,5 +963,6 @@ class MainActivity : Activity() {
         private const val MENU_FOLDER = 7
         private const val MENU_INTERNAL = 8
         private const val MENU_EMPTY_TRASH = 9
+        private const val MENU_TASKS = 10
     }
 }
