@@ -27,6 +27,7 @@ import android.text.format.DateFormat
 import android.text.format.DateUtils
 import android.text.method.LinkMovementMethod
 import android.text.style.ForegroundColorSpan
+import android.text.style.ImageSpan
 import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.EditorInfo
@@ -75,6 +76,9 @@ class EditorActivity : Activity() {
     private var typingBurst = false
     private val handler = Handler(Looper.getMainLooper())
     private val endBurst = Runnable { typingBurst = false }
+
+    // Images shown inside the editor, loaded once per path.
+    private val imageCache = HashMap<String, Drawable?>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -196,6 +200,7 @@ class EditorActivity : Activity() {
                 override fun afterTextChanged(s: Editable?) {
                     if (s != null) {
                         Markdown.styleEditable(s, p)
+                        showInlineImages(s)
                         updateCount()
                     }
                     if (!restoring) {
@@ -313,6 +318,28 @@ class EditorActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putString(KEY_ID, noteId)
+    }
+
+    // ---------- Images inside the editor ----------
+
+    /** Shows each image link as the picture itself; the Markdown stays in the file. */
+    private fun showInlineImages(s: Editable) {
+        for (span in s.getSpans(0, s.length, ImageSpan::class.java)) s.removeSpan(span)
+        for (m in IMAGE_LINK.findAll(s)) {
+            val path = m.groupValues[1]
+            val picture = imageCache.getOrPut(path) { loadImage(path) } ?: continue
+            s.setSpan(
+                ImageSpan(picture, ImageSpan.ALIGN_BOTTOM),
+                m.range.first,
+                m.range.last + 1,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        }
+    }
+
+    private fun refreshInlineImages() {
+        showInlineImages(bodyView.text)
+        bodyView.requestLayout()
     }
 
     // ---------- Undo and redo ----------
@@ -1008,7 +1035,9 @@ class EditorActivity : Activity() {
         if (resultCode != RESULT_OK) return
         if (requestCode == REQ_DRAW) {
             val drawing = data?.getStringExtra(DrawActivity.EXTRA_PATH) ?: return
+            imageCache.remove(drawing)
             if (editingDrawing) {
+                refreshInlineImages()
                 if (reading) showRead()
             } else {
                 insertBlock("![]($drawing)")
