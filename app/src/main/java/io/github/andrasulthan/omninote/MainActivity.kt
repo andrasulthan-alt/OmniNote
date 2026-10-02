@@ -1081,8 +1081,9 @@ class MainActivity : Activity() {
         private const val MENU_APP_LOCK = 11
         private const val MENU_VAULT = 12
         private const val MENU_SYNC = 13
-        private const val SYNCTHING_PAGE = "https://f-droid.org/packages/com.github.catfriend1.syncthingandroid/"
+        private const val SYNCTHING_PAGE = "https://github.com/researchxxl/syncthing-android/releases"
         private val SYNCTHING_PACKAGES = listOf(
+            "com.github.catfriend1.syncthingfork",
             "com.github.catfriend1.syncthingandroid",
             "com.nutomic.syncthingandroid"
         )
