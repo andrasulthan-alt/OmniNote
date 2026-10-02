@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="new_note">Catatan baru</string>
+    <string name="more">Opsi lainnya</string>
+    <string name="back">Kembali</string>
+    <string name="folder_internal">Tersimpan di HP ini</string>
+    <string name="folder_named">Folder: %1$s</string>
+    <string name="menu_choose_folder">Pilih folder catatan…</string>
+    <string name="menu_internal">Simpan di HP ini</string>
+    <string name="empty">Belum ada catatan.\nKetuk + untuk menulis.</string>
+    <string name="title_hint">Judul</string>
+    <string name="body_hint">Mulai menulis…</string>
+    <string name="delete">Hapus</string>
+    <string name="delete_confirm">Hapus catatan ini?</string>
+    <string name="cancel">Batal</string>
+    <string name="error_open">Catatan ini tidak bisa dibuka.</string>
+    <string name="error_save">Catatan ini tidak bisa disimpan.</string>
+    <string name="error_folder">Folder catatan tidak bisa dibaca.</string>
+</resources>
