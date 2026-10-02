@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Widget -->
+    <string name="widget_quick_label">OmniNote catatan cepat</string>
+    <string name="widget_note_label">OmniNote satu catatan</string>
+    <string name="widget_new_note">+ CATATAN</string>
+    <string name="widget_new_list">☐ DAFTAR</string>
+    <string name="widget_pick">Pilih catatan untuk widget ini</string>
+    <string name="widget_note_missing">Catatan ini sudah dipindah atau dihapus. Ketuk untuk membuka OmniNote.</string>
+    <string name="widget_empty_note">Catatan kosong</string>
+
+    <!-- Tombol cepat di panel notifikasi -->
+    <string name="tile_label">Catatan baru</string>
+
+    <!-- Pintasan ikon -->
+    <string name="shortcut_new_note">Catatan baru</string>
+    <string name="shortcut_new_list">Daftar centang baru</string>
+    <string name="shortcut_tasks">Tugas</string>
+</resources>
