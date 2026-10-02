@@ -60,6 +60,7 @@ class EditorActivity : Activity() {
     private var deleted = false
     private var reading = false
     private var locked = false
+    private var editingDrawing = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -203,6 +204,7 @@ class EditorActivity : Activity() {
         tool("↗", R.string.tool_link) { link() }
         tool("[[", R.string.tool_note_link) { pickNoteLink() }
         tool("IMG", R.string.tool_image) { pickImage() }
+        tool("✎", R.string.tool_draw) { openDraw(null) }
         tool("▦", R.string.tool_table) { table() }
         tool("—", R.string.tool_rule) { rule() }
 
@@ -425,6 +427,39 @@ class EditorActivity : Activity() {
         meta = change(meta)
         updateMetaLine()
         save()
+    }
+
+    // ---------- Drawings ----------
+
+    /** Drawings used in this note, like "attachments/drawing-20261002-191500.png". */
+    private fun drawingsInNote(): List<String> =
+        IMAGE_LINK.findAll(bodyView.text.toString())
+            .map { it.groupValues[1] }
+            .filter { DrawActivity.isDrawing(it) }
+            .distinct()
+            .toList()
+
+    private fun openDraw(path: String?) {
+        save()
+        editingDrawing = path != null
+        val intent = Intent(this, DrawActivity::class.java)
+        if (path != null) intent.putExtra(DrawActivity.EXTRA_PATH, path)
+        startActivityForResult(intent, REQ_DRAW)
+    }
+
+    private fun editDrawing() {
+        val drawings = drawingsInNote()
+        when {
+            drawings.isEmpty() -> return
+            drawings.size == 1 -> openDraw(drawings[0])
+            else -> {
+                val labels = drawings.map { it.substringAfterLast('/') }.toTypedArray()
+                AlertDialog.Builder(this)
+                    .setTitle(R.string.draw_pick)
+                    .setItems(labels) { _, which -> openDraw(drawings[which]) }
+                    .show()
+            }
+        }
     }
 
     // ---------- Export ----------
@@ -870,6 +905,15 @@ class EditorActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (resultCode != RESULT_OK) return
+        if (requestCode == REQ_DRAW) {
+            val drawing = data?.getStringExtra(DrawActivity.EXTRA_PATH) ?: return
+            if (editingDrawing) {
+                if (reading) showRead()
+            } else {
+                insertBlock("![]($drawing)")
+            }
+            return
+        }
         val uri = data?.data ?: return
         when (requestCode) {
             REQ_IMAGE -> addImage(uri)
@@ -935,11 +979,12 @@ class EditorActivity : Activity() {
         menu.add(0, M_ARCHIVE, 7, if (meta.archived) R.string.unarchive else R.string.archive)
         menu.add(0, M_LOCK, 8, if (locked) R.string.unlock_note else R.string.lock_note)
         menu.add(0, M_HISTORY, 9, R.string.history)
-        menu.add(0, M_CHECKED, 10, R.string.checked_to_bottom)
-        menu.add(0, M_SHARE, 11, R.string.share)
-        menu.add(0, M_EXPORT, 12, R.string.export_note)
-        menu.add(0, M_TOC, 13, R.string.toc)
-        menu.add(0, M_DELETE, 14, R.string.delete)
+        if (drawingsInNote().isNotEmpty()) menu.add(0, M_DRAW, 10, R.string.draw_edit)
+        menu.add(0, M_CHECKED, 11, R.string.checked_to_bottom)
+        menu.add(0, M_SHARE, 12, R.string.share)
+        menu.add(0, M_EXPORT, 13, R.string.export_note)
+        menu.add(0, M_TOC, 14, R.string.toc)
+        menu.add(0, M_DELETE, 15, R.string.delete)
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 M_PIN -> changeMeta { it.copy(pinned = !it.pinned) }
@@ -952,6 +997,7 @@ class EditorActivity : Activity() {
                 M_ARCHIVE -> changeMeta { it.copy(archived = !it.archived) }
                 M_LOCK -> if (locked) removeLock() else lockNote()
                 M_HISTORY -> showHistory()
+                M_DRAW -> editDrawing()
                 M_CHECKED -> checkedToBottom()
                 M_SHARE -> share()
                 M_EXPORT -> exportNote()
@@ -1248,6 +1294,7 @@ class EditorActivity : Activity() {
         private const val REQ_NOTIFY = 8
         private const val REQ_EXPORT_MD = 9
         private const val REQ_EXPORT_HTML = 10
+        private const val REQ_DRAW = 11
         private const val M_PIN = 1
         private const val M_REMIND = 2
         private const val M_REMIND_OFF = 3
@@ -1263,9 +1310,11 @@ class EditorActivity : Activity() {
         private const val M_TOC = 13
         private const val M_DELETE = 14
         private const val M_EXPORT = 15
+        private const val M_DRAW = 16
         private val WORD = Regex("\\S+")
         private val TOC_HEADING = Regex("^(#{1,6})\\s+(.*)")
         private val TASK_BOX = Regex("^(\\s*[-*+]\\s\\[)([ xX])(]\\s)")
         private val TASK_PREFIXES = listOf("- [ ] ", "- [x] ", "- [X] ")
+        private val IMAGE_LINK = Regex("!\\[[^\\]]*\\]\\(([^)\\s]+)\\)")
     }
 }
