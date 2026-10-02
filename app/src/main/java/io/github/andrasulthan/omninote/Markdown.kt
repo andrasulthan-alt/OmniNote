@@ -3,6 +3,7 @@ package io.github.andrasulthan.omninote
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.graphics.drawable.Drawable
 import android.text.Layout
 import android.text.Spannable
 import android.text.SpannableStringBuilder
@@ -11,6 +12,7 @@ import android.text.TextPaint
 import android.text.style.BackgroundColorSpan
 import android.text.style.ClickableSpan
 import android.text.style.ForegroundColorSpan
+import android.text.style.ImageSpan
 import android.text.style.LeadingMarginSpan
 import android.text.style.RelativeSizeSpan
 import android.text.style.StrikethroughSpan
@@ -22,6 +24,7 @@ import android.view.View
 /**
  * Small Markdown engine for OmniNote, written without libraries.
  * styleEditable() colours text while typing; render() builds the read view.
+ * Supports images ![](attachments/x.jpg) and note links [[Title]].
  */
 object Markdown {
 
@@ -93,10 +96,14 @@ object Markdown {
     private val ITALIC = Regex("(?<![*\\w])\\*(?![\\s*])(.+?)(?<![\\s*])\\*(?![*\\w])")
     private val STRIKE = Regex("~~(.+?)~~")
     private val CODE = Regex("`([^`]+)`")
+    private val IMAGE = Regex("!\\[([^\\]]*)]\\(([^)\\s]+)\\)")
+    private val WIKI = Regex("\\[\\[([^\\]]+)]]")
     private val LINK = Regex("\\[([^\\]]+)]\\(([^)\\s]+)\\)")
     private val URL = Regex("https?://[^\\s)]+")
     private val TOKEN = Regex(
-        "`([^`]+)`" +
+        "!\\[([^\\]]*)]\\(([^)\\s]+)\\)" +
+            "|\\[\\[([^\\]]+)]]" +
+            "|`([^`]+)`" +
             "|\\*\\*(.+?)\\*\\*" +
             "|~~(.+?)~~" +
             "|\\[([^\\]]+)]\\(([^)\\s]+)\\)" +
@@ -207,21 +214,36 @@ object Markdown {
         for (m in URL.findAll(line)) {
             span(e, MdUnderline(), at + m.range.first, at + m.range.last + 1)
         }
+        for (m in IMAGE.findAll(line)) {
+            span(e, MdColor(p.muted), at + m.range.first, at + m.range.last + 1)
+        }
+        for (m in WIKI.findAll(line)) {
+            val s = at + m.range.first
+            val t = at + m.range.last + 1
+            span(e, MdUnderline(), s + 2, t - 2)
+            span(e, MdColor(p.muted), s, s + 2)
+            span(e, MdColor(p.muted), t - 2, t)
+        }
     }
 
     // ---------- Read view ----------
 
     /**
-     * Builds the read view. onToggle gets the line number of a tapped checkbox,
-     * onLink gets the address of a tapped link.
+     * Builds the read view.
+     * onToggle gets the line number of a tapped checkbox, onLink a tapped web link,
+     * onNote the title of a tapped [[note link]], loadImage turns an image path into a picture.
      */
     fun render(
         source: String,
         p: Ui.Palette,
         density: Float,
         onToggle: (Int) -> Unit,
-        onLink: (String) -> Unit
+        onLink: (String) -> Unit,
+        onNote: (String) -> Unit = {},
+        loadImage: (String) -> Drawable? = { null },
+        missingImage: String = ""
     ): CharSequence {
+        val ctx = RenderContext(p, onLink, onNote, loadImage, missingImage)
         val out = SpannableStringBuilder()
         val lines = source.replace("\r\n", "\n").split("\n")
         val stripe = (3 * density).toInt()
@@ -259,7 +281,7 @@ object Markdown {
                 heading != null -> {
                     val level = heading.groupValues[1].length
                     val start = out.length
-                    appendInline(out, line.substring(heading.value.length), p, onLink)
+                    appendInline(out, line.substring(heading.value.length), ctx)
                     span(out, MdSize(HEAD_SIZES[level - 1]), start, out.length)
                     span(out, MdStyle(Typeface.BOLD), start, out.length)
                     out.append('\n')
@@ -272,7 +294,7 @@ object Markdown {
                     out.append(if (checked) "☑ " else "☐ ")
                     span(out, MdTap(Ui.RED) { onToggle(lineIndex) }, boxStart, out.length)
                     val textStart = out.length
-                    appendInline(out, line.substring(task.value.length), p, onLink)
+                    appendInline(out, line.substring(task.value.length), ctx)
                     if (checked) {
                         span(out, MdStrike(), textStart, out.length)
                         span(out, MdColor(p.muted), textStart, out.length)
@@ -291,18 +313,18 @@ object Markdown {
                     val start = out.length
                     out.append(if (marker[0].isDigit()) "$marker " else "• ")
                     span(out, MdColor(Ui.RED), start, out.length)
-                    appendInline(out, line.substring(bullet.value.length), p, onLink)
+                    appendInline(out, line.substring(bullet.value.length), ctx)
                     out.append('\n')
                 }
                 quote != null -> {
                     val start = out.length
-                    appendInline(out, line.substring(quote.value.length), p, onLink)
+                    appendInline(out, line.substring(quote.value.length), ctx)
                     out.append('\n')
                     span(out, MdColor(p.muted), start, out.length)
                     span(out, MdQuote(p.muted, stripe, gap), start, out.length)
                 }
                 else -> {
-                    appendInline(out, line, p, onLink)
+                    appendInline(out, line, ctx)
                     out.append('\n')
                 }
             }
@@ -311,41 +333,59 @@ object Markdown {
         return out
     }
 
-    private fun appendInline(
-        out: SpannableStringBuilder,
-        text: String,
-        p: Ui.Palette,
-        onLink: (String) -> Unit
-    ) {
+    private class RenderContext(
+        val p: Ui.Palette,
+        val onLink: (String) -> Unit,
+        val onNote: (String) -> Unit,
+        val loadImage: (String) -> Drawable?,
+        val missingImage: String
+    )
+
+    private fun appendInline(out: SpannableStringBuilder, text: String, ctx: RenderContext) {
+        val p = ctx.p
         var last = 0
         for (m in TOKEN.findAll(text)) {
             out.append(text, last, m.range.first)
             val g = m.groupValues
             val s = out.length
             when {
-                g[1].isNotEmpty() -> {
-                    out.append(g[1])
-                    span(out, MdBack(p.border), s, out.length)
-                }
                 g[2].isNotEmpty() -> {
-                    out.append(g[2])
-                    span(out, MdStyle(Typeface.BOLD), s, out.length)
+                    val picture = ctx.loadImage(g[2])
+                    if (picture != null) {
+                        out.append("\uFFFC")
+                        span(out, ImageSpan(picture), s, out.length)
+                    } else {
+                        out.append(ctx.missingImage)
+                        span(out, MdColor(p.muted), s, out.length)
+                    }
                 }
                 g[3].isNotEmpty() -> {
                     out.append(g[3])
-                    span(out, MdStrike(), s, out.length)
+                    span(out, MdLink(g[3], p.text, ctx.onNote), s, out.length)
                 }
                 g[4].isNotEmpty() -> {
                     out.append(g[4])
-                    span(out, MdLink(g[5], p.text, onLink), s, out.length)
+                    span(out, MdBack(p.border), s, out.length)
+                }
+                g[5].isNotEmpty() -> {
+                    out.append(g[5])
+                    span(out, MdStyle(Typeface.BOLD), s, out.length)
                 }
                 g[6].isNotEmpty() -> {
                     out.append(g[6])
+                    span(out, MdStrike(), s, out.length)
+                }
+                g[8].isNotEmpty() -> {
+                    out.append(g[7])
+                    span(out, MdLink(g[8], p.text, ctx.onLink), s, out.length)
+                }
+                g[9].isNotEmpty() -> {
+                    out.append(g[9])
                     span(out, MdStyle(Typeface.ITALIC), s, out.length)
                 }
                 else -> {
-                    out.append(g[7])
-                    span(out, MdLink(g[7], p.text, onLink), s, out.length)
+                    out.append(g[10])
+                    span(out, MdLink(g[10], p.text, ctx.onLink), s, out.length)
                 }
             }
             last = m.range.last + 1
@@ -385,6 +425,8 @@ object Markdown {
     // ---------- Plain preview for the note list ----------
 
     fun plain(text: String): String = text
+        .replace(IMAGE, "🖼")
+        .replace(WIKI) { it.groupValues[1] }
         .replace(Regex("[-*+] \\[ ] "), "☐ ")
         .replace(Regex("[-*+] \\[[xX]] "), "☑ ")
         .replace(Regex("(^|\\s)#{1,6} "), "$1")
