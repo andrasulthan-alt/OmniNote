@@ -14,8 +14,11 @@ import android.net.Uri
 import android.os.Bundle
 import android.text.Editable
 import android.text.InputType
+import android.text.SpannableStringBuilder
+import android.text.Spanned
 import android.text.TextWatcher
 import android.text.method.LinkMovementMethod
+import android.text.style.ForegroundColorSpan
 import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.EditorInfo
@@ -27,6 +30,7 @@ import android.widget.PopupMenu
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import java.io.File
 
 /** Writes, reads and edits one note. Saves automatically when the screen is left. */
 class EditorActivity : Activity() {
@@ -34,6 +38,7 @@ class EditorActivity : Activity() {
     private lateinit var store: NoteStore
     private lateinit var p: Ui.Palette
     private lateinit var titleView: EditText
+    private lateinit var metaView: TextView
     private lateinit var bodyView: EditText
     private lateinit var readScroll: ScrollView
     private lateinit var readView: TextView
@@ -41,6 +46,8 @@ class EditorActivity : Activity() {
     private lateinit var modeButton: TextView
     private lateinit var countView: TextView
     private var noteId: String? = null
+    private var meta = NoteMeta()
+    private var folder = ""
     private var savedText = ""
     private var deleted = false
     private var reading = false
@@ -50,6 +57,7 @@ class EditorActivity : Activity() {
         store = NoteStore(this)
         p = Ui.palette(this)
         noteId = savedInstanceState?.getString(KEY_ID) ?: intent.getStringExtra(EXTRA_ID)
+        folder = intent.getStringExtra(EXTRA_FOLDER) ?: ""
 
         val scale = store.fontScale()
         val pad = Ui.dp(this, 20f)
@@ -98,10 +106,16 @@ class EditorActivity : Activity() {
             textSize = 24f * scale
             typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
             background = null
-            setPadding(0, pad / 2, 0, pad / 2)
+            setPadding(0, pad / 2, 0, 0)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
             imeOptions = EditorInfo.IME_ACTION_NEXT or EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
             setSingleLine(true)
+        }
+
+        metaView = Ui.text(this, 11f, p.muted).apply {
+            letterSpacing = 0.05f
+            setPadding(0, small / 2, 0, small)
+            visibility = View.GONE
         }
 
         val line = View(this).apply { setBackgroundColor(p.border) }
@@ -188,6 +202,7 @@ class EditorActivity : Activity() {
 
         root.addView(bar)
         root.addView(titleView)
+        root.addView(metaView)
         root.addView(line, LinearLayout.LayoutParams(match, Ui.dp(this, 1f)))
         root.addView(bodyView, LinearLayout.LayoutParams(match, 0, 1f))
         root.addView(readScroll, LinearLayout.LayoutParams(match, 0, 1f))
@@ -197,28 +212,34 @@ class EditorActivity : Activity() {
         setContentView(root)
 
         val existing = noteId
-        when {
-            existing != null -> {
-                try {
-                    val (title, body) = NoteStore.split(store.read(existing))
-                    titleView.setText(title)
-                    bodyView.setText(body)
-                    savedText = NoteStore.join(title, body)
-                } catch (e: Exception) {
-                    Toast.makeText(this, R.string.error_open, Toast.LENGTH_LONG).show()
+        if (existing != null) {
+            try {
+                val (m, content) = NoteMeta.parse(store.read(existing))
+                val (title, body) = NoteStore.split(content)
+                meta = m
+                folder = store.folderOf(existing)
+                titleView.setText(title)
+                bodyView.setText(body)
+                savedText = buildText()
+            } catch (e: Exception) {
+                Toast.makeText(this, R.string.error_open, Toast.LENGTH_LONG).show()
+            }
+        } else {
+            meta = NoteMeta(created = System.currentTimeMillis(), color = store.defaultColor)
+            when {
+                intent.action == Intent.ACTION_SEND -> {
+                    titleView.setText(intent.getStringExtra(Intent.EXTRA_SUBJECT) ?: "")
+                    bodyView.setText(intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString() ?: "")
                 }
+                intent.getStringExtra(EXTRA_TITLE) != null -> {
+                    titleView.setText(intent.getStringExtra(EXTRA_TITLE))
+                    bodyView.requestFocus()
+                }
+                else -> titleView.requestFocus()
             }
-            intent.action == Intent.ACTION_SEND -> {
-                titleView.setText(intent.getStringExtra(Intent.EXTRA_SUBJECT) ?: "")
-                bodyView.setText(intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString() ?: "")
-            }
-            intent.getStringExtra(EXTRA_TITLE) != null -> {
-                titleView.setText(intent.getStringExtra(EXTRA_TITLE))
-                bodyView.requestFocus()
-            }
-            else -> titleView.requestFocus()
         }
         updateCount()
+        updateMetaLine()
     }
 
     override fun onPause() {
@@ -233,17 +254,31 @@ class EditorActivity : Activity() {
 
     // ---------- Saving ----------
 
+    private fun buildText(): String =
+        NoteMeta.build(meta, NoteStore.join(titleView.text.toString(), bodyView.text.toString()))
+
     private fun save() {
         val title = titleView.text.toString()
         val body = bodyView.text.toString()
-        val text = NoteStore.join(title, body)
+        val text = buildText()
         if (text == savedText) return
         if (noteId == null && title.isBlank() && body.isBlank()) return
         try {
-            noteId = store.save(noteId, title, text)
+            noteId = store.save(noteId, title, text, folder)
             savedText = text
         } catch (e: Exception) {
+            keepDraft(text)
             Toast.makeText(this, R.string.error_save, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** Keeps a safety copy on this phone when saving to the folder fails. */
+    private fun keepDraft(text: String) {
+        try {
+            val dir = File(filesDir, "drafts").apply { mkdirs() }
+            File(dir, "draft-" + System.currentTimeMillis() + ".md").writeText(text)
+        } catch (e: Exception) {
+            // Nothing more we can do here.
         }
     }
 
@@ -251,6 +286,31 @@ class EditorActivity : Activity() {
         val body = bodyView.text.toString()
         val words = WORD.findAll(body).count()
         countView.text = getString(R.string.word_count, words, body.length)
+    }
+
+    /** Small line under the title: colour, notebook, tags and pinned or archived state. */
+    private fun updateMetaLine() {
+        val out = SpannableStringBuilder()
+        val colour = NoteMeta.colorValue(meta.color)
+        if (colour != null) {
+            out.append("● ")
+            out.setSpan(ForegroundColorSpan(colour), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        val parts = ArrayList<String>()
+        if (meta.pinned) parts.add(getString(R.string.pinned).uppercase())
+        if (meta.archived) parts.add(getString(R.string.filter_archive).uppercase())
+        if (folder.isNotBlank() && folder != NoteStore.TRASH) parts.add(folder)
+        if (folder == NoteStore.TRASH) parts.add(getString(R.string.filter_trash).uppercase())
+        if (meta.tags.isNotEmpty()) parts.add(meta.tags.joinToString(" ") { "#$it" })
+        out.append(parts.joinToString("  ·  "))
+        metaView.text = out
+        metaView.visibility = if (out.isEmpty()) View.GONE else View.VISIBLE
+    }
+
+    private fun changeMeta(change: (NoteMeta) -> NoteMeta) {
+        meta = change(meta)
+        updateMetaLine()
+        save()
     }
 
     // ---------- Read / edit modes ----------
@@ -320,6 +380,7 @@ class EditorActivity : Activity() {
             next.putExtra(EXTRA_ID, found.id)
         } else {
             next.putExtra(EXTRA_TITLE, title)
+            next.putExtra(EXTRA_FOLDER, folder)
         }
         startActivity(next)
     }
@@ -396,15 +457,25 @@ class EditorActivity : Activity() {
             .show()
     }
 
-    // ---------- More menu: share, contents, delete ----------
+    // ---------- More menu ----------
 
     private fun showMoreMenu(anchor: View) {
         val popup = PopupMenu(this, anchor)
-        popup.menu.add(0, M_SHARE, 0, R.string.share)
-        popup.menu.add(0, M_TOC, 1, R.string.toc)
-        popup.menu.add(0, M_DELETE, 2, R.string.delete)
+        popup.menu.add(0, M_PIN, 0, if (meta.pinned) R.string.unpin else R.string.pin)
+        popup.menu.add(0, M_COLOR, 1, R.string.color)
+        popup.menu.add(0, M_TAGS, 2, R.string.tags)
+        popup.menu.add(0, M_MOVE, 3, R.string.move)
+        popup.menu.add(0, M_ARCHIVE, 4, if (meta.archived) R.string.unarchive else R.string.archive)
+        popup.menu.add(0, M_SHARE, 5, R.string.share)
+        popup.menu.add(0, M_TOC, 6, R.string.toc)
+        popup.menu.add(0, M_DELETE, 7, R.string.delete)
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
+                M_PIN -> changeMeta { it.copy(pinned = !it.pinned) }
+                M_COLOR -> chooseColor()
+                M_TAGS -> editTags()
+                M_MOVE -> chooseNotebook()
+                M_ARCHIVE -> changeMeta { it.copy(archived = !it.archived) }
                 M_SHARE -> share()
                 M_TOC -> showToc()
                 M_DELETE -> confirmDelete()
@@ -412,6 +483,103 @@ class EditorActivity : Activity() {
             true
         }
         popup.show()
+    }
+
+    private fun chooseColor() {
+        val names = listOf(
+            R.string.color_none, R.string.color_red, R.string.color_orange, R.string.color_yellow,
+            R.string.color_green, R.string.color_blue, R.string.color_purple, R.string.color_gray
+        ).map { getString(it) }
+        val values = listOf<String?>(null) + NoteMeta.COLORS
+        val checked = values.indexOf(meta.color).coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.color)
+            .setSingleChoiceItems(names.toTypedArray(), checked) { dialog, which ->
+                changeMeta { it.copy(color = values[which]) }
+                dialog.dismiss()
+            }
+            .show()
+    }
+
+    private fun editTags() {
+        val input = EditText(this).apply {
+            hint = getString(R.string.tags_hint)
+            setText(meta.tags.joinToString(", "))
+            setSingleLine(true)
+            imeOptions = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
+        }
+        val box = LinearLayout(this).apply {
+            val pad = Ui.dp(this@EditorActivity, 20f)
+            setPadding(pad, pad / 2, pad, 0)
+            addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.tags)
+            .setView(box)
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton(R.string.save) { _, _ ->
+                changeMeta { it.copy(tags = NoteMeta.splitList(input.text.toString()).distinct()) }
+            }
+            .show()
+    }
+
+    private fun chooseNotebook() {
+        save()
+        val current = noteId
+        if (current == null) {
+            Toast.makeText(this, R.string.error_move, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val books = try {
+            store.notebooks()
+        } catch (e: Exception) {
+            emptyList()
+        }
+        val labels = listOf(getString(R.string.top_level)) + books + getString(R.string.menu_new_notebook)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.move)
+            .setItems(labels.toTypedArray()) { _, which ->
+                when (which) {
+                    0 -> moveTo("")
+                    labels.size - 1 -> askNewNotebook()
+                    else -> moveTo(books[which - 1])
+                }
+            }
+            .show()
+    }
+
+    private fun askNewNotebook() {
+        val input = EditText(this).apply {
+            hint = getString(R.string.notebook_hint)
+            setSingleLine(true)
+        }
+        val box = LinearLayout(this).apply {
+            val pad = Ui.dp(this@EditorActivity, 20f)
+            setPadding(pad, pad / 2, pad, 0)
+            addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.menu_new_notebook)
+            .setView(box)
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton(R.string.save) { _, _ ->
+                val path = NoteStore.cleanPath(input.text.toString())
+                if (path.isNotBlank()) moveTo(path)
+            }
+            .show()
+    }
+
+    private fun moveTo(target: String) {
+        val current = noteId ?: return
+        try {
+            noteId = store.move(current, target)
+            folder = NoteStore.cleanPath(target)
+            updateMetaLine()
+        } catch (e: Exception) {
+            Toast.makeText(this, R.string.error_move, Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun share() {
@@ -467,11 +635,16 @@ class EditorActivity : Activity() {
             .setMessage(R.string.delete_confirm)
             .setNegativeButton(R.string.cancel, null)
             .setPositiveButton(R.string.delete) { _, _ ->
+                save()
                 deleted = true
                 val existing = noteId
                 if (existing != null) {
                     try {
-                        store.delete(existing)
+                        if (folder == NoteStore.TRASH) {
+                            store.deleteForever(existing)
+                        } else {
+                            store.delete(existing)
+                        }
                     } catch (e: Exception) {
                         Toast.makeText(this, R.string.error_save, Toast.LENGTH_LONG).show()
                     }
@@ -589,13 +762,19 @@ class EditorActivity : Activity() {
     companion object {
         const val EXTRA_ID = "note_id"
         const val EXTRA_TITLE = "note_title"
+        const val EXTRA_FOLDER = "note_folder"
         private const val KEY_ID = "note_id"
         private const val ID_TITLE = 101
         private const val ID_BODY = 102
         private const val REQ_IMAGE = 7
-        private const val M_SHARE = 1
-        private const val M_TOC = 2
-        private const val M_DELETE = 3
+        private const val M_PIN = 1
+        private const val M_COLOR = 2
+        private const val M_TAGS = 3
+        private const val M_MOVE = 4
+        private const val M_ARCHIVE = 5
+        private const val M_SHARE = 6
+        private const val M_TOC = 7
+        private const val M_DELETE = 8
         private val WORD = Regex("\\S+")
         private val TOC_HEADING = Regex("^(#{1,6})\\s+(.*)")
         private val TASK_BOX = Regex("^(\\s*[-*+]\\s\\[)([ xX])(]\\s)")
