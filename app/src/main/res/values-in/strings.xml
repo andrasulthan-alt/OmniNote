@@ -18,6 +18,8 @@
     <string name="menu_default_color">Warna bawaan…</string>
     <string name="menu_new_notebook">Notebook baru…</string>
     <string name="menu_tasks">Tugas</string>
+    <string name="menu_app_lock">Kunci aplikasi…</string>
+    <string name="menu_vault">Vault…</string>
     <string name="empty">Belum ada catatan.\nKetuk + untuk menulis.</string>
     <string name="empty_filtered">Tidak ada catatan di sini.</string>
 
@@ -82,6 +84,36 @@
     <string name="channel_reminders">Pengingat</string>
     <string name="channel_pinned">Catatan di notifikasi</string>
     <string name="notify_permission">Izinkan notifikasi supaya pengingat bisa muncul.</string>
+
+    <!-- Kunci aplikasi -->
+    <string name="app_lock_off">Mati</string>
+    <string name="app_lock_now">Langsung kunci</string>
+    <string name="app_lock_1">Setelah ditinggal 1 menit</string>
+    <string name="app_lock_5">Setelah ditinggal 5 menit</string>
+    <string name="lock_title">OmniNote terkunci</string>
+    <string name="lock_unlock">Buka kunci</string>
+    <string name="lock_reason">Konfirmasi identitas untuk membuka OmniNote</string>
+    <string name="lock_no_secure">Pasang kunci layar (PIN, pola, atau sidik jari) di pengaturan HP untuk memakai kunci aplikasi.</string>
+
+    <!-- Vault -->
+    <string name="vault_setup">Buat vault</string>
+    <string name="vault_password">Sandi vault</string>
+    <string name="vault_password_again">Ulangi sandi</string>
+    <string name="vault_hint">Petunjuk sandi (opsional)</string>
+    <string name="vault_warning">Sandi ini tidak bisa dipulihkan. Kalau lupa, catatan yang dikunci tidak akan pernah bisa dibuka lagi.</string>
+    <string name="vault_mismatch">Kedua sandi tidak sama.</string>
+    <string name="vault_short">Pakai minimal 6 karakter.</string>
+    <string name="vault_open">Buka vault</string>
+    <string name="vault_wrong">Sandi salah.</string>
+    <string name="vault_hint_label">Petunjuk: %1$s</string>
+    <string name="vault_close">Tutup vault sekarang</string>
+    <string name="vault_working">Sedang memproses…</string>
+    <string name="vault_ready">Vault siap dipakai.</string>
+    <string name="vault_closed">Vault ditutup.</string>
+    <string name="lock_note">Kunci catatan</string>
+    <string name="unlock_note">Lepas kunci</string>
+    <string name="locked_note">Catatan terkunci</string>
+    <string name="locked_open_hint">Masukkan sandi vault untuk membuka catatan ini.</string>
 
     <!-- Sampah dan pilihan -->
     <string name="restore">Pulihkan</string>
