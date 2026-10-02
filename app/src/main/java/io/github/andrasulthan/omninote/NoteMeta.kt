@@ -7,7 +7,8 @@ import java.util.TimeZone
 /**
  * Note properties kept as YAML front matter at the top of the Markdown file,
  * the same way Obsidian stores them, so other apps keep working with the files.
- * Ideas from Scarlet Notes (pin, color, tags, reminders) and Notesnook (archive, trash).
+ * Ideas from Scarlet Notes (pin, color, tags, reminders, locked notes)
+ * and Notesnook (archive, trash, vault).
  */
 data class NoteMeta(
     val pinned: Boolean = false,
@@ -17,6 +18,7 @@ data class NoteMeta(
     val created: Long = 0L,
     val trashedFrom: String? = null,
     val remind: Long = 0L,
+    val vault: Boolean = false,
     val extra: List<String> = emptyList()
 ) {
     companion object {
@@ -49,6 +51,7 @@ data class NoteMeta(
             var created = 0L
             var trashedFrom: String? = null
             var remind = 0L
+            var vault = false
             val extra = ArrayList<String>()
             var inTags = false
 
@@ -72,6 +75,7 @@ data class NoteMeta(
                     "created" -> created = parseTime(unquote(value))
                     "trashed_from" -> trashedFrom = unquote(value).ifBlank { null }
                     "remind" -> remind = parseTime(unquote(value))
+                    "vault" -> vault = value.equals("true", ignoreCase = true)
                     else -> if (line.isNotBlank()) extra.add(line)
                 }
             }
@@ -83,6 +87,7 @@ data class NoteMeta(
                 created = created,
                 trashedFrom = trashedFrom,
                 remind = remind,
+                vault = vault,
                 extra = extra
             )
             return meta to t.substring(afterFence)
@@ -91,6 +96,7 @@ data class NoteMeta(
         /** Puts the properties back on top of the Markdown content. */
         fun build(meta: NoteMeta, content: String): String {
             val lines = ArrayList<String>()
+            if (meta.vault) lines.add("vault: true")
             if (meta.created > 0) lines.add("created: " + formatTime(meta.created))
             if (meta.pinned) lines.add("pinned: true")
             if (meta.archived) lines.add("archived: true")
