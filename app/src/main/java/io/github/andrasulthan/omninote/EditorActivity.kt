@@ -427,6 +427,59 @@ class EditorActivity : Activity() {
         save()
     }
 
+    // ---------- Export ----------
+
+    private fun exportNote() {
+        save()
+        val options = arrayOf(
+            getString(R.string.export_md),
+            getString(R.string.export_html),
+            getString(R.string.export_pdf)
+        )
+        AlertDialog.Builder(this)
+            .setTitle(R.string.export_note)
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> createExportFile("text/markdown", ".md", REQ_EXPORT_MD)
+                    1 -> createExportFile("text/html", ".html", REQ_EXPORT_HTML)
+                    else -> {
+                        val title = titleView.text.toString().ifBlank { getString(R.string.app_name) }
+                        HtmlExport.print(this, HtmlExport.page(store, buildText()), "OmniNote - $title")
+                    }
+                }
+            }
+            .show()
+    }
+
+    private fun createExportFile(mime: String, extension: String, requestCode: Int) {
+        val name = NoteStore.fileNameFor(titleView.text.toString()).removeSuffix(".md") + extension
+        val create = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = mime
+            putExtra(Intent.EXTRA_TITLE, name)
+        }
+        try {
+            startActivityForResult(create, requestCode)
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(this, R.string.export_failed, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun writeExport(uri: Uri, text: String) {
+        val ok = try {
+            val out = contentResolver.openOutputStream(uri, "wt")
+            if (out != null) {
+                out.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+                true
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            false
+        }
+        Toast.makeText(this, if (ok) R.string.export_saved else R.string.export_failed, Toast.LENGTH_SHORT).show()
+    }
+
     // ---------- Version history ----------
 
     private fun showHistory() {
@@ -816,8 +869,16 @@ class EditorActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQ_IMAGE || resultCode != RESULT_OK) return
+        if (resultCode != RESULT_OK) return
         val uri = data?.data ?: return
+        when (requestCode) {
+            REQ_IMAGE -> addImage(uri)
+            REQ_EXPORT_MD -> writeExport(uri, buildText())
+            REQ_EXPORT_HTML -> writeExport(uri, HtmlExport.page(store, buildText()))
+        }
+    }
+
+    private fun addImage(uri: Uri) {
         Thread {
             val path = try {
                 store.saveAttachment(uri)
@@ -876,8 +937,9 @@ class EditorActivity : Activity() {
         menu.add(0, M_HISTORY, 9, R.string.history)
         menu.add(0, M_CHECKED, 10, R.string.checked_to_bottom)
         menu.add(0, M_SHARE, 11, R.string.share)
-        menu.add(0, M_TOC, 12, R.string.toc)
-        menu.add(0, M_DELETE, 13, R.string.delete)
+        menu.add(0, M_EXPORT, 12, R.string.export_note)
+        menu.add(0, M_TOC, 13, R.string.toc)
+        menu.add(0, M_DELETE, 14, R.string.delete)
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 M_PIN -> changeMeta { it.copy(pinned = !it.pinned) }
@@ -892,6 +954,7 @@ class EditorActivity : Activity() {
                 M_HISTORY -> showHistory()
                 M_CHECKED -> checkedToBottom()
                 M_SHARE -> share()
+                M_EXPORT -> exportNote()
                 M_TOC -> showToc()
                 M_DELETE -> confirmDelete()
             }
@@ -1183,6 +1246,8 @@ class EditorActivity : Activity() {
         private const val ID_BODY = 102
         private const val REQ_IMAGE = 7
         private const val REQ_NOTIFY = 8
+        private const val REQ_EXPORT_MD = 9
+        private const val REQ_EXPORT_HTML = 10
         private const val M_PIN = 1
         private const val M_REMIND = 2
         private const val M_REMIND_OFF = 3
@@ -1197,6 +1262,7 @@ class EditorActivity : Activity() {
         private const val M_SHARE = 12
         private const val M_TOC = 13
         private const val M_DELETE = 14
+        private const val M_EXPORT = 15
         private val WORD = Regex("\\S+")
         private val TOC_HEADING = Regex("^(#{1,6})\\s+(.*)")
         private val TASK_BOX = Regex("^(\\s*[-*+]\\s\\[)([ xX])(]\\s)")
