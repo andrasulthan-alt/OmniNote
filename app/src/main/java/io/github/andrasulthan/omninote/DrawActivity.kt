@@ -40,7 +40,6 @@ class DrawActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         path = intent.getStringExtra(EXTRA_PATH)
-        darkSystemBars()
 
         val pad = Ui.dp(this, 16f)
         val small = Ui.dp(this, 8f)
@@ -115,22 +114,29 @@ class DrawActivity : Activity() {
         Ui.applyInsets(root)
         setContentView(root)
 
+        // The window exists only after setContentView, so system bars are styled here.
+        darkSystemBars()
         loadExisting()
         updateTools()
     }
 
+    /** Black status and navigation bars with light icons. Some phones refuse; that is fine. */
     @Suppress("DEPRECATION")
     private fun darkSystemBars() {
-        window.statusBarColor = BG
-        window.navigationBarColor = BG
-        if (Build.VERSION.SDK_INT >= 30) {
-            window.insetsController?.setSystemBarsAppearance(
-                0,
-                WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
-                    WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-            )
-        } else {
-            window.decorView.systemUiVisibility = 0
+        try {
+            window.statusBarColor = BG
+            window.navigationBarColor = BG
+            if (Build.VERSION.SDK_INT >= 30) {
+                window.decorView.windowInsetsController?.setSystemBarsAppearance(
+                    0,
+                    WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                        WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+                )
+            } else {
+                window.decorView.systemUiVisibility = 0
+            }
+        } catch (e: Exception) {
+            // Keep the default bars; drawing still works.
         }
     }
 
