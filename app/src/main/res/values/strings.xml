@@ -21,6 +21,8 @@
     <string name="menu_default_color">Default color…</string>
     <string name="menu_new_notebook">New notebook…</string>
     <string name="menu_tasks">Tasks</string>
+    <string name="menu_app_lock">App lock…</string>
+    <string name="menu_vault">Vault…</string>
     <string name="empty">No notes yet.\nTap + to write one.</string>
     <string name="empty_filtered">No notes here.</string>
 
@@ -85,6 +87,36 @@
     <string name="channel_reminders">Reminders</string>
     <string name="channel_pinned">Notes in notifications</string>
     <string name="notify_permission">Allow notifications so reminders can appear.</string>
+
+    <!-- App lock -->
+    <string name="app_lock_off">Off</string>
+    <string name="app_lock_now">Lock right away</string>
+    <string name="app_lock_1">After 1 minute away</string>
+    <string name="app_lock_5">After 5 minutes away</string>
+    <string name="lock_title">OmniNote is locked</string>
+    <string name="lock_unlock">Unlock</string>
+    <string name="lock_reason">Confirm your identity to open OmniNote</string>
+    <string name="lock_no_secure">Set a screen lock (PIN, pattern or fingerprint) in your phone settings to use app lock.</string>
+
+    <!-- Vault -->
+    <string name="vault_setup">Set up vault</string>
+    <string name="vault_password">Vault password</string>
+    <string name="vault_password_again">Repeat password</string>
+    <string name="vault_hint">Password hint (optional)</string>
+    <string name="vault_warning">There is no way to recover this password. If you forget it, locked notes can never be opened again.</string>
+    <string name="vault_mismatch">The passwords do not match.</string>
+    <string name="vault_short">Use at least 6 characters.</string>
+    <string name="vault_open">Open vault</string>
+    <string name="vault_wrong">Wrong password.</string>
+    <string name="vault_hint_label">Hint: %1$s</string>
+    <string name="vault_close">Close vault now</string>
+    <string name="vault_working">Working…</string>
+    <string name="vault_ready">The vault is ready.</string>
+    <string name="vault_closed">The vault is closed.</string>
+    <string name="lock_note">Lock note</string>
+    <string name="unlock_note">Remove lock</string>
+    <string name="locked_note">Locked note</string>
+    <string name="locked_open_hint">Enter the vault password to open this note.</string>
 
     <!-- Trash and selection -->
     <string name="restore">Restore</string>
