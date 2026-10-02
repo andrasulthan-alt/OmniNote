@@ -36,6 +36,9 @@
     <string name="word_count">%1$d kata · %2$d karakter</string>
     <string name="link_text">teks tautan</string>
     <string name="table_col">Kolom</string>
+    <string name="pick_note">Tautkan ke catatan</string>
+    <string name="no_other_notes">Belum ada catatan lain untuk ditautkan.</string>
+    <string name="image_missing">[gambar tidak ditemukan]</string>
 
     <!-- Keterangan toolbar -->
     <string name="tool_heading">Judul bagian</string>
@@ -47,6 +50,8 @@
     <string name="tool_task">Daftar centang</string>
     <string name="tool_quote">Kutipan</string>
     <string name="tool_link">Tautan</string>
+    <string name="tool_note_link">Tautan catatan</string>
+    <string name="tool_image">Gambar</string>
     <string name="tool_table">Tabel</string>
     <string name="tool_rule">Garis pemisah</string>
 
@@ -58,4 +63,5 @@
     <string name="error_save">Catatan ini tidak bisa disimpan.</string>
     <string name="error_folder">Folder catatan tidak bisa dibaca.</string>
     <string name="error_link">Tidak ada aplikasi untuk membuka tautan ini.</string>
+    <string name="error_image">Gambar ini tidak bisa ditambahkan.</string>
 </resources>
