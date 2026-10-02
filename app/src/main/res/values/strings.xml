@@ -3,6 +3,7 @@
     <string name="app_name" translatable="false">OmniNote</string>
     <string name="hello" translatable="false">Notes, the quiet way.</string>
 
+    <!-- Home -->
     <string name="new_note">New note</string>
     <string name="more">More options</string>
     <string name="back">Back</string>
@@ -10,13 +11,54 @@
     <string name="folder_named">Folder: %1$s</string>
     <string name="menu_choose_folder">Choose notes folder…</string>
     <string name="menu_internal">Store on this phone</string>
+    <string name="menu_preview">Preview lines…</string>
+    <string name="menu_font">Text size…</string>
     <string name="empty">No notes yet.\nTap + to write one.</string>
+
+    <!-- Preview lines -->
+    <string name="preview_none">Title only</string>
+    <string name="preview_1">1 line</string>
+    <string name="preview_2">2 lines</string>
+    <string name="preview_3">3 lines</string>
+
+    <!-- Text size -->
+    <string name="font_small">Small</string>
+    <string name="font_normal">Normal</string>
+    <string name="font_large">Large</string>
+    <string name="font_huge">Extra large</string>
+
+    <!-- Editor -->
     <string name="title_hint">Title</string>
     <string name="body_hint">Start writing…</string>
+    <string name="mode_read">Read</string>
+    <string name="mode_edit">Edit</string>
+    <string name="share">Share</string>
+    <string name="share_via">Share note via</string>
+    <string name="toc">Contents</string>
+    <string name="toc_empty">This note has no headings yet.</string>
+    <string name="word_count">%1$d words · %2$d characters</string>
+    <string name="link_text">link text</string>
+    <string name="table_col">Column</string>
+
+    <!-- Toolbar descriptions -->
+    <string name="tool_heading">Heading</string>
+    <string name="tool_bold">Bold</string>
+    <string name="tool_italic">Italic</string>
+    <string name="tool_strike">Strikethrough</string>
+    <string name="tool_code">Code</string>
+    <string name="tool_bullet">Bulleted list</string>
+    <string name="tool_task">Checklist</string>
+    <string name="tool_quote">Quote</string>
+    <string name="tool_link">Link</string>
+    <string name="tool_table">Table</string>
+    <string name="tool_rule">Divider</string>
+
+    <!-- Dialogs and errors -->
     <string name="delete">Delete</string>
     <string name="delete_confirm">Delete this note?</string>
     <string name="cancel">Cancel</string>
     <string name="error_open">Could not open this note.</string>
     <string name="error_save">Could not save this note.</string>
     <string name="error_folder">Could not read the notes folder.</string>
+    <string name="error_link">No app can open this link.</string>
 </resources>
