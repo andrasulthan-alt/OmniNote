@@ -7,7 +7,7 @@ import java.util.TimeZone
 /**
  * Note properties kept as YAML front matter at the top of the Markdown file,
  * the same way Obsidian stores them, so other apps keep working with the files.
- * Ideas from Scarlet Notes (pin, color, tags) and Notesnook (archive, trash).
+ * Ideas from Scarlet Notes (pin, color, tags, reminders) and Notesnook (archive, trash).
  */
 data class NoteMeta(
     val pinned: Boolean = false,
@@ -16,6 +16,7 @@ data class NoteMeta(
     val tags: List<String> = emptyList(),
     val created: Long = 0L,
     val trashedFrom: String? = null,
+    val remind: Long = 0L,
     val extra: List<String> = emptyList()
 ) {
     companion object {
@@ -47,6 +48,7 @@ data class NoteMeta(
             val tags = ArrayList<String>()
             var created = 0L
             var trashedFrom: String? = null
+            var remind = 0L
             val extra = ArrayList<String>()
             var inTags = false
 
@@ -69,6 +71,7 @@ data class NoteMeta(
                     "tags" -> if (value.isEmpty()) inTags = true else tags.addAll(splitList(value))
                     "created" -> created = parseTime(unquote(value))
                     "trashed_from" -> trashedFrom = unquote(value).ifBlank { null }
+                    "remind" -> remind = parseTime(unquote(value))
                     else -> if (line.isNotBlank()) extra.add(line)
                 }
             }
@@ -79,6 +82,7 @@ data class NoteMeta(
                 tags = tags.filter { it.isNotBlank() }.distinct(),
                 created = created,
                 trashedFrom = trashedFrom,
+                remind = remind,
                 extra = extra
             )
             return meta to t.substring(afterFence)
@@ -92,6 +96,7 @@ data class NoteMeta(
             if (meta.archived) lines.add("archived: true")
             meta.color?.let { lines.add("color: $it") }
             if (meta.tags.isNotEmpty()) lines.add("tags: [" + meta.tags.joinToString(", ") + "]")
+            if (meta.remind > 0) lines.add("remind: " + formatTime(meta.remind))
             meta.trashedFrom?.let { lines.add("trashed_from: \"$it\"") }
             lines.addAll(meta.extra)
             if (lines.isEmpty()) return content
