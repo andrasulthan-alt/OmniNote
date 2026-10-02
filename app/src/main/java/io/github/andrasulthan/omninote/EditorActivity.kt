@@ -244,6 +244,11 @@ class EditorActivity : Activity() {
                     titleView.setText(intent.getStringExtra(EXTRA_TITLE))
                     bodyView.requestFocus()
                 }
+                intent.hasExtra(Widgets.EXTRA_CHECKLIST) -> {
+                    bodyView.setText("- [ ] ")
+                    bodyView.requestFocus()
+                    bodyView.setSelection(bodyView.text.length)
+                }
                 else -> titleView.requestFocus()
             }
             updateCount()
@@ -333,6 +338,7 @@ class EditorActivity : Activity() {
         val plain = buildText()
         if (plain == savedText) return
         if (noteId == null && title.isBlank() && body.isBlank()) return
+        if (noteId == null && title.isBlank() && body.trim() == "- [ ]") return
         val isNew = noteId == null
         if (isNew && !locked && title.isNotBlank()) {
             val clash = try {
@@ -362,6 +368,7 @@ class EditorActivity : Activity() {
             if (!locked && Reminders.isPinned(this, id)) {
                 Reminders.pinNotification(this, id, title.ifBlank { getString(R.string.app_name) }, previewText())
             }
+            Widgets.refreshNotes(this)
         } catch (e: Exception) {
             if (!locked) keepDraft(plain)
             Toast.makeText(this, R.string.error_save, Toast.LENGTH_LONG).show()
@@ -522,6 +529,7 @@ class EditorActivity : Activity() {
             return
         }
         deleted = true
+        Widgets.refreshNotes(this)
         Toast.makeText(this, R.string.conflict_resolved, Toast.LENGTH_SHORT).show()
         if (openId != null) {
             startActivity(Intent(this, EditorActivity::class.java).putExtra(EXTRA_ID, openId))
@@ -590,6 +598,7 @@ class EditorActivity : Activity() {
             followNewId(id, renamed)
             noteId = renamed
             Reminders.unpinNotification(this, renamed)
+            Widgets.refreshNotes(this)
             updateMetaLine()
         }
     }
@@ -602,6 +611,7 @@ class EditorActivity : Activity() {
         val renamed = store.rename(id, titleView.text.toString().ifBlank { "Note" })
         followNewId(id, renamed)
         noteId = renamed
+        Widgets.refreshNotes(this)
         updateMetaLine()
     }
 
@@ -659,9 +669,10 @@ class EditorActivity : Activity() {
         }
     }
 
-    /** Keeps reminders and notifications working after a note gets a new id. */
+    /** Keeps reminders, notifications and widgets working after a note gets a new id. */
     private fun followNewId(oldId: String, newId: String) {
         if (oldId == newId) return
+        Widgets.followNewId(this, oldId, newId)
         if (meta.remind > System.currentTimeMillis()) {
             Reminders.cancel(this, oldId)
             Reminders.schedule(this, newId, reminderTitle(), meta.remind)
@@ -1051,6 +1062,7 @@ class EditorActivity : Activity() {
                     } catch (e: Exception) {
                         Toast.makeText(this, R.string.error_save, Toast.LENGTH_LONG).show()
                     }
+                    Widgets.refreshNotes(this)
                 }
                 finish()
             }
