@@ -22,7 +22,7 @@ import android.widget.TextView
 import android.widget.Toast
 import java.util.concurrent.Executors
 
-/** Home screen: list of notes, new-note button and folder menu. */
+/** Home screen: list of notes, new-note button and settings menu. */
 class MainActivity : Activity() {
 
     private lateinit var store: NoteStore
@@ -171,21 +171,57 @@ class MainActivity : Activity() {
         if (store.treeUri != null) {
             popup.menu.add(0, MENU_INTERNAL, 1, R.string.menu_internal)
         }
+        popup.menu.add(0, MENU_PREVIEW, 2, R.string.menu_preview)
+        popup.menu.add(0, MENU_FONT, 3, R.string.menu_font)
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
-                MENU_FOLDER -> {
-                    startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_FOLDER)
-                    true
-                }
+                MENU_FOLDER -> startActivityForResult(
+                    Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_FOLDER
+                )
                 MENU_INTERNAL -> {
                     store.treeUri = null
                     reload()
-                    true
                 }
-                else -> false
+                MENU_PREVIEW -> choosePreview()
+                MENU_FONT -> chooseFont()
             }
+            true
         }
         popup.show()
+    }
+
+    private fun choosePreview() {
+        val options = arrayOf(
+            getString(R.string.preview_none),
+            getString(R.string.preview_1),
+            getString(R.string.preview_2),
+            getString(R.string.preview_3)
+        )
+        AlertDialog.Builder(this)
+            .setTitle(R.string.menu_preview)
+            .setSingleChoiceItems(options, store.previewLines) { dialog, which ->
+                store.previewLines = which
+                notesAdapter.notifyDataSetChanged()
+                dialog.dismiss()
+            }
+            .show()
+    }
+
+    private fun chooseFont() {
+        val options = arrayOf(
+            getString(R.string.font_small),
+            getString(R.string.font_normal),
+            getString(R.string.font_large),
+            getString(R.string.font_huge)
+        )
+        AlertDialog.Builder(this)
+            .setTitle(R.string.menu_font)
+            .setSingleChoiceItems(options, store.fontLevel) { dialog, which ->
+                store.fontLevel = which
+                notesAdapter.notifyDataSetChanged()
+                dialog.dismiss()
+            }
+            .show()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -233,10 +269,20 @@ class MainActivity : Activity() {
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
             val card = (convertView as? LinearLayout) ?: buildCard()
             val note = items[position]
-            (card.getChildAt(0) as TextView).text = note.title
+            val scale = store.fontScale()
+            val lines = store.previewLines
+
+            val titleView = card.getChildAt(0) as TextView
+            titleView.text = note.title
+            titleView.textSize = 16f * scale
+
             val preview = card.getChildAt(1) as TextView
-            preview.text = note.preview
-            preview.visibility = if (note.preview.isEmpty()) View.GONE else View.VISIBLE
+            preview.text = Markdown.plain(note.preview)
+            preview.textSize = 13f * scale
+            preview.maxLines = if (lines > 0) lines else 1
+            preview.visibility =
+                if (lines == 0 || note.preview.isEmpty()) View.GONE else View.VISIBLE
+
             (card.getChildAt(2) as TextView).text =
                 DateUtils.getRelativeTimeSpanString(note.modified)
             return card
@@ -256,8 +302,8 @@ class MainActivity : Activity() {
                     ellipsize = TextUtils.TruncateAt.END
                 })
                 addView(Ui.text(ctx, 13f, p.muted).apply {
-                    maxLines = 2
                     ellipsize = TextUtils.TruncateAt.END
+                    setLineSpacing(0f, 1.2f)
                     setPadding(0, Ui.dp(ctx, 6f), 0, 0)
                 })
                 addView(Ui.text(ctx, 11f, p.muted).apply {
@@ -273,5 +319,7 @@ class MainActivity : Activity() {
         private const val REQ_FOLDER = 42
         private const val MENU_FOLDER = 1
         private const val MENU_INTERNAL = 2
+        private const val MENU_PREVIEW = 3
+        private const val MENU_FONT = 4
     }
 }
