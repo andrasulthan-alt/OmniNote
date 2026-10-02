@@ -1,7 +1,10 @@
 package io.github.andrasulthan.omninote
 
+import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -11,12 +14,15 @@ import android.graphics.Typeface
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.text.Editable
 import android.text.InputType
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.TextWatcher
+import android.text.format.DateFormat
+import android.text.format.DateUtils
 import android.text.method.LinkMovementMethod
 import android.text.style.ForegroundColorSpan
 import android.view.Gravity
@@ -31,6 +37,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import java.io.File
+import java.util.Calendar
 
 /** Writes, reads and edits one note. Saves automatically when the screen is left. */
 class EditorActivity : Activity() {
@@ -263,9 +270,22 @@ class EditorActivity : Activity() {
         val text = buildText()
         if (text == savedText) return
         if (noteId == null && title.isBlank() && body.isBlank()) return
+        val isNew = noteId == null
+        if (isNew && title.isNotBlank()) {
+            val clash = try {
+                store.findByTitle(title) != null
+            } catch (e: Exception) {
+                false
+            }
+            if (clash) Toast.makeText(this, R.string.duplicate_title, Toast.LENGTH_SHORT).show()
+        }
         try {
-            noteId = store.save(noteId, title, text, folder)
+            val id = store.save(noteId, title, text, folder)
+            noteId = id
             savedText = text
+            if (Reminders.isPinned(this, id)) {
+                Reminders.pinNotification(this, id, title.ifBlank { getString(R.string.app_name) }, previewText())
+            }
         } catch (e: Exception) {
             keepDraft(text)
             Toast.makeText(this, R.string.error_save, Toast.LENGTH_LONG).show()
@@ -282,13 +302,16 @@ class EditorActivity : Activity() {
         }
     }
 
+    private fun previewText(): String =
+        Markdown.plain(bodyView.text.toString().trim().take(300))
+
     private fun updateCount() {
         val body = bodyView.text.toString()
         val words = WORD.findAll(body).count()
         countView.text = getString(R.string.word_count, words, body.length)
     }
 
-    /** Small line under the title: colour, notebook, tags and pinned or archived state. */
+    /** Small line under the title: colour, reminder, notebook, tags and pinned or archived state. */
     private fun updateMetaLine() {
         val out = SpannableStringBuilder()
         val colour = NoteMeta.colorValue(meta.color)
@@ -297,6 +320,7 @@ class EditorActivity : Activity() {
             out.setSpan(ForegroundColorSpan(colour), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
         val parts = ArrayList<String>()
+        if (meta.remind > System.currentTimeMillis()) parts.add("⏰ " + formatTime(meta.remind))
         if (meta.pinned) parts.add(getString(R.string.pinned).uppercase())
         if (meta.archived) parts.add(getString(R.string.filter_archive).uppercase())
         if (folder.isNotBlank() && folder != NoteStore.TRASH) parts.add(folder)
@@ -307,10 +331,103 @@ class EditorActivity : Activity() {
         metaView.visibility = if (out.isEmpty()) View.GONE else View.VISIBLE
     }
 
+    private fun formatTime(millis: Long): String =
+        DateUtils.formatDateTime(
+            this, millis,
+            DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_SHOW_TIME or DateUtils.FORMAT_ABBREV_MONTH
+        )
+
     private fun changeMeta(change: (NoteMeta) -> NoteMeta) {
         meta = change(meta)
         updateMetaLine()
         save()
+    }
+
+    // ---------- Reminders and notifications ----------
+
+    private fun askNotificationPermission() {
+        if (!Reminders.canNotify(this) && Build.VERSION.SDK_INT >= 33) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFY)
+            Toast.makeText(this, R.string.notify_permission, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun chooseReminder() {
+        askNotificationPermission()
+        val now = Calendar.getInstance()
+        DatePickerDialog(this, { _, year, month, day ->
+            TimePickerDialog(this, { _, hour, minute ->
+                val at = Calendar.getInstance().apply {
+                    set(year, month, day, hour, minute, 0)
+                    set(Calendar.MILLISECOND, 0)
+                }.timeInMillis
+                setReminder(at)
+            }, now.get(Calendar.HOUR_OF_DAY), now.get(Calendar.MINUTE), DateFormat.is24HourFormat(this)).show()
+        }, now.get(Calendar.YEAR), now.get(Calendar.MONTH), now.get(Calendar.DAY_OF_MONTH)).show()
+    }
+
+    private fun setReminder(at: Long) {
+        if (at <= System.currentTimeMillis()) {
+            Toast.makeText(this, R.string.remind_past, Toast.LENGTH_SHORT).show()
+            return
+        }
+        changeMeta { it.copy(remind = at) }
+        val id = noteId ?: return
+        Reminders.schedule(this, id, titleView.text.toString().ifBlank { getString(R.string.app_name) }, at)
+        Toast.makeText(this, getString(R.string.remind_set, formatTime(at)), Toast.LENGTH_LONG).show()
+    }
+
+    private fun removeReminder() {
+        changeMeta { it.copy(remind = 0L) }
+        noteId?.let { Reminders.cancel(this, it) }
+    }
+
+    private fun toggleNotificationPin() {
+        save()
+        val id = noteId ?: return
+        if (Reminders.isPinned(this, id)) {
+            Reminders.unpinNotification(this, id)
+        } else {
+            askNotificationPermission()
+            Reminders.pinNotification(this, id, titleView.text.toString().ifBlank { getString(R.string.app_name) }, previewText())
+        }
+    }
+
+    /** Keeps reminders and notifications working after a note gets a new id. */
+    private fun followNewId(oldId: String, newId: String) {
+        if (oldId == newId) return
+        val title = titleView.text.toString().ifBlank { getString(R.string.app_name) }
+        if (meta.remind > System.currentTimeMillis()) {
+            Reminders.cancel(this, oldId)
+            Reminders.schedule(this, newId, title, meta.remind)
+        }
+        if (Reminders.isPinned(this, oldId)) {
+            Reminders.unpinNotification(this, oldId)
+            Reminders.pinNotification(this, newId, title, previewText())
+        }
+    }
+
+    private fun checkedToBottom() {
+        val lines = bodyView.text.toString().split("\n")
+        val out = ArrayList<String>()
+        var i = 0
+        while (i < lines.size) {
+            if (TASK_BOX.containsMatchIn(lines[i])) {
+                val block = ArrayList<String>()
+                while (i < lines.size && TASK_BOX.containsMatchIn(lines[i])) {
+                    block.add(lines[i])
+                    i++
+                }
+                val (done, open) = block.partition { TASK_BOX.find(it)?.groupValues?.get(2) != " " }
+                out.addAll(open)
+                out.addAll(done)
+            } else {
+                out.add(lines[i])
+                i++
+            }
+        }
+        bodyView.setText(out.joinToString("\n"))
+        if (reading) showRead()
     }
 
     // ---------- Read / edit modes ----------
@@ -460,22 +577,33 @@ class EditorActivity : Activity() {
     // ---------- More menu ----------
 
     private fun showMoreMenu(anchor: View) {
+        val id = noteId
         val popup = PopupMenu(this, anchor)
-        popup.menu.add(0, M_PIN, 0, if (meta.pinned) R.string.unpin else R.string.pin)
-        popup.menu.add(0, M_COLOR, 1, R.string.color)
-        popup.menu.add(0, M_TAGS, 2, R.string.tags)
-        popup.menu.add(0, M_MOVE, 3, R.string.move)
-        popup.menu.add(0, M_ARCHIVE, 4, if (meta.archived) R.string.unarchive else R.string.archive)
-        popup.menu.add(0, M_SHARE, 5, R.string.share)
-        popup.menu.add(0, M_TOC, 6, R.string.toc)
-        popup.menu.add(0, M_DELETE, 7, R.string.delete)
+        val menu = popup.menu
+        menu.add(0, M_PIN, 0, if (meta.pinned) R.string.unpin else R.string.pin)
+        menu.add(0, M_REMIND, 1, R.string.remind)
+        if (meta.remind > 0) menu.add(0, M_REMIND_OFF, 2, R.string.remind_remove)
+        menu.add(0, M_NOTIFY, 3,
+            if (id != null && Reminders.isPinned(this, id)) R.string.notify_unpin else R.string.notify_pin)
+        menu.add(0, M_COLOR, 4, R.string.color)
+        menu.add(0, M_TAGS, 5, R.string.tags)
+        menu.add(0, M_MOVE, 6, R.string.move)
+        menu.add(0, M_ARCHIVE, 7, if (meta.archived) R.string.unarchive else R.string.archive)
+        menu.add(0, M_CHECKED, 8, R.string.checked_to_bottom)
+        menu.add(0, M_SHARE, 9, R.string.share)
+        menu.add(0, M_TOC, 10, R.string.toc)
+        menu.add(0, M_DELETE, 11, R.string.delete)
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 M_PIN -> changeMeta { it.copy(pinned = !it.pinned) }
+                M_REMIND -> chooseReminder()
+                M_REMIND_OFF -> removeReminder()
+                M_NOTIFY -> toggleNotificationPin()
                 M_COLOR -> chooseColor()
                 M_TAGS -> editTags()
                 M_MOVE -> chooseNotebook()
                 M_ARCHIVE -> changeMeta { it.copy(archived = !it.archived) }
+                M_CHECKED -> checkedToBottom()
                 M_SHARE -> share()
                 M_TOC -> showToc()
                 M_DELETE -> confirmDelete()
@@ -501,6 +629,14 @@ class EditorActivity : Activity() {
             .show()
     }
 
+    private fun dialogBox(input: View): LinearLayout =
+        LinearLayout(this).apply {
+            val pad = Ui.dp(this@EditorActivity, 20f)
+            setPadding(pad, pad / 2, pad, 0)
+            addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+
     private fun editTags() {
         val input = EditText(this).apply {
             hint = getString(R.string.tags_hint)
@@ -508,15 +644,9 @@ class EditorActivity : Activity() {
             setSingleLine(true)
             imeOptions = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
         }
-        val box = LinearLayout(this).apply {
-            val pad = Ui.dp(this@EditorActivity, 20f)
-            setPadding(pad, pad / 2, pad, 0)
-            addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT))
-        }
         AlertDialog.Builder(this)
             .setTitle(R.string.tags)
-            .setView(box)
+            .setView(dialogBox(input))
             .setNegativeButton(R.string.cancel, null)
             .setPositiveButton(R.string.save) { _, _ ->
                 changeMeta { it.copy(tags = NoteMeta.splitList(input.text.toString()).distinct()) }
@@ -526,8 +656,7 @@ class EditorActivity : Activity() {
 
     private fun chooseNotebook() {
         save()
-        val current = noteId
-        if (current == null) {
+        if (noteId == null) {
             Toast.makeText(this, R.string.error_move, Toast.LENGTH_SHORT).show()
             return
         }
@@ -554,15 +683,9 @@ class EditorActivity : Activity() {
             hint = getString(R.string.notebook_hint)
             setSingleLine(true)
         }
-        val box = LinearLayout(this).apply {
-            val pad = Ui.dp(this@EditorActivity, 20f)
-            setPadding(pad, pad / 2, pad, 0)
-            addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT))
-        }
         AlertDialog.Builder(this)
             .setTitle(R.string.menu_new_notebook)
-            .setView(box)
+            .setView(dialogBox(input))
             .setNegativeButton(R.string.cancel, null)
             .setPositiveButton(R.string.save) { _, _ ->
                 val path = NoteStore.cleanPath(input.text.toString())
@@ -574,8 +697,10 @@ class EditorActivity : Activity() {
     private fun moveTo(target: String) {
         val current = noteId ?: return
         try {
-            noteId = store.move(current, target)
+            val moved = store.move(current, target)
+            noteId = moved
             folder = NoteStore.cleanPath(target)
+            followNewId(current, moved)
             updateMetaLine()
         } catch (e: Exception) {
             Toast.makeText(this, R.string.error_move, Toast.LENGTH_LONG).show()
@@ -639,6 +764,8 @@ class EditorActivity : Activity() {
                 deleted = true
                 val existing = noteId
                 if (existing != null) {
+                    Reminders.cancel(this, existing)
+                    Reminders.unpinNotification(this, existing)
                     try {
                         if (folder == NoteStore.TRASH) {
                             store.deleteForever(existing)
@@ -767,14 +894,19 @@ class EditorActivity : Activity() {
         private const val ID_TITLE = 101
         private const val ID_BODY = 102
         private const val REQ_IMAGE = 7
+        private const val REQ_NOTIFY = 8
         private const val M_PIN = 1
-        private const val M_COLOR = 2
-        private const val M_TAGS = 3
-        private const val M_MOVE = 4
-        private const val M_ARCHIVE = 5
-        private const val M_SHARE = 6
-        private const val M_TOC = 7
-        private const val M_DELETE = 8
+        private const val M_REMIND = 2
+        private const val M_REMIND_OFF = 3
+        private const val M_NOTIFY = 4
+        private const val M_COLOR = 5
+        private const val M_TAGS = 6
+        private const val M_MOVE = 7
+        private const val M_ARCHIVE = 8
+        private const val M_CHECKED = 9
+        private const val M_SHARE = 10
+        private const val M_TOC = 11
+        private const val M_DELETE = 12
         private val WORD = Regex("\\S+")
         private val TOC_HEADING = Regex("^(#{1,6})\\s+(.*)")
         private val TASK_BOX = Regex("^(\\s*[-*+]\\s\\[)([ xX])(]\\s)")
