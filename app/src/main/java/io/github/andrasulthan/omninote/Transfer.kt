@@ -201,6 +201,7 @@ object Transfer {
     private val IMAGE_LINK = Regex("!\\[([^\\]]*)\\]\\(([^)\\s]+)\\)")
     private val WIKI_IMAGE = Regex("!\\[\\[([^\\]|]+)(\\|[^\\]]*)?\\]\\]")
     private val SCARLET_TASK = Regex("(?m)^\\[([ xX])\\] ")
+    private val SCARLET_IMAGE_TAG = Regex("<image>[^<]*</image>")
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("omninote", Context.MODE_PRIVATE)
 
@@ -375,12 +376,13 @@ object Transfer {
         }
         val notes = data.optJSONArray("notes") ?: return 0
         val store = NoteStore(ctx)
+        val imageNote = ctx.getString(R.string.import_scarlet_image)
         var count = 0
         for (i in 0 until notes.length()) {
             val n = notes.optJSONObject(i) ?: continue
             val state = n.optString("state", "DEFAULT")
             if (state == "TRASH") continue
-            val (title, body) = scarletContent(n.optString("description", ""))
+            val (title, body) = scarletContent(n.optString("description", ""), imageNote)
             if (title.isBlank() && body.isBlank()) continue
             val meta = NoteMeta(
                 created = n.optLong("timestamp", 0L),
@@ -400,8 +402,8 @@ object Transfer {
         return count
     }
 
-    /** Turns Scarlet's list of blocks into a title and Markdown text. */
-    private fun scarletContent(description: String): Pair<String, String> {
+    /** Turns Scarlet's list of blocks into a title and Markdown text. Images become a marker. */
+    private fun scarletContent(description: String, imageNote: String): Pair<String, String> {
         val array = try {
             JSONObject(description).getJSONArray("note")
         } catch (e: Exception) {
@@ -430,7 +432,8 @@ object Transfer {
                 "CODE" -> "```\n$text\n```"
                 "QUOTE" -> text.lines().joinToString("\n") { "> $it" }
                 "SEPARATOR" -> "---"
-                "IMAGE", "TAG" -> null
+                "IMAGE" -> "> $imageNote"
+                "TAG" -> null
                 else -> text
             } ?: continue
             val isList = type in LIST_TYPES
@@ -444,9 +447,11 @@ object Transfer {
     /** Scarlet's "export as Markdown" backup: notes separated by a line of dashes. */
     private fun importScarletMarkdown(ctx: Context, text: String): Int {
         val store = NoteStore(ctx)
+        val imageNote = ctx.getString(R.string.import_scarlet_image)
         var count = 0
         for (chunk in text.split(SCARLET_SEPARATOR)) {
-            val note = SCARLET_TASK.replace(chunk.trim()) { m -> "- [${m.groupValues[1]}] " }
+            val withTasks = SCARLET_TASK.replace(chunk.trim()) { m -> "- [${m.groupValues[1]}] " }
+            val note = SCARLET_IMAGE_TAG.replace(withTasks) { "> $imageNote" }
             if (note.isBlank()) continue
             val (title, body) = NoteStore.split(note)
             val hint = title.ifBlank { body.lineSequence().firstOrNull { it.isNotBlank() }?.take(40) ?: "" }
