@@ -6,6 +6,11 @@ OmniNote brings together the best ideas of four open-source projects, **nothing.
 
 Your notes are plain Markdown files. You own them, any app can read them, and nothing ever leaves your phone unless you sync it yourself.
 
+<p align="center">
+  <img src="docs/screenshots.png" alt="OmniNote screens: notes grid, Markdown editor, tasks, drawing and vault unlock" width="100%">
+</p>
+<p align="center"><sub>NOTES · EDITOR · TASKS · DRAWING · VAULT (light theme). Interface previews drawn from the app's UI; the notes are examples.</sub></p>
+
 ## Features
 
 ### Writing
@@ -21,7 +26,7 @@ Your notes are plain Markdown files. You own them, any app can read them, and no
 - Tasks screen that collects every checklist item from all notes
 
 ### Reminders and quick access
-- Reminders with notifications, and notes pinned to the notification panel
+- Reminders that ring on time (also after a restart), and notes pinned to the notification panel
 - Home screen widgets: a quick-note bar and a widget that shows one note
 - "New note" button in Quick Settings and launcher shortcuts (new note, new checklist, tasks)
 - Share text from any app into a new note
