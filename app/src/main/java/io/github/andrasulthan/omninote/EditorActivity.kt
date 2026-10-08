@@ -950,7 +950,13 @@ class EditorActivity : Activity() {
             return
         }
         changeMeta { it.copy(remind = at) }
-        val id = noteId ?: return
+        if (noteId == null) save()
+        val id = noteId
+        if (id == null) {
+            // An empty note is not saved, so it cannot ring yet.
+            Toast.makeText(this, R.string.error_save, Toast.LENGTH_SHORT).show()
+            return
+        }
         Reminders.schedule(this, id, reminderTitle(), at)
         Toast.makeText(this, getString(R.string.remind_set, formatTime(at)), Toast.LENGTH_LONG).show()
     }

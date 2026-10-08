@@ -62,6 +62,9 @@ class MainActivity : Activity() {
     private val notesAdapter = NotesAdapter()
     private val io = Executors.newSingleThreadExecutor()
     private val handler = Handler(Looper.getMainLooper())
+    private val loading = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var reloadAgain = false
+    private var folderErrorShown = false
     private val refresher = object : Runnable {
         override fun run() {
             if (selected.isEmpty()) reload()
@@ -300,6 +303,11 @@ class MainActivity : Activity() {
         }
         grid.numColumns = if (store.gridLayout) 2 else 1
         if (io.isShutdown) return
+        // One listing at a time; a request that arrives meanwhile runs once the current one ends.
+        if (!loading.compareAndSet(false, true)) {
+            reloadAgain = true
+            return
+        }
         io.execute {
             var failed = false
             val notes = try {
@@ -319,13 +327,19 @@ class MainActivity : Activity() {
                 emptyList()
             }
             runOnUiThread {
+                loading.set(false)
                 if (!isDestroyed) {
-                    if (failed) Toast.makeText(this, R.string.error_folder, Toast.LENGTH_LONG).show()
+                    if (failed && !folderErrorShown) Toast.makeText(this, R.string.error_folder, Toast.LENGTH_LONG).show()
+                    folderErrorShown = failed
                     allNotes = notes
                     trashNotes = trash
                     notebooks = books
                     buildChips()
                     applyFilter()
+                    if (reloadAgain) {
+                        reloadAgain = false
+                        reload()
+                    }
                 }
             }
         }
@@ -491,6 +505,35 @@ class MainActivity : Activity() {
         runThenReload { work(notes) }
     }
 
+    /** Runs one change per note; a note that fails does not stop the others. */
+    private inline fun List<Note>.each(op: (Note) -> Unit) {
+        var failed: Exception? = null
+        for (n in this) {
+            try {
+                op(n)
+            } catch (e: Exception) {
+                failed = e
+            }
+        }
+        if (failed != null) throw failed
+    }
+
+    /** Keeps reminders, notifications and widgets with a note after it moved to a new id. */
+    private fun relocate(note: Note, change: () -> String) {
+        val newId = change()
+        if (newId == note.id) return
+        Widgets.followNewId(this, note.id, newId)
+        if (Reminders.isPinned(this, note.id)) {
+            Reminders.unpinNotification(this, note.id)
+            if (!note.meta.vault) Reminders.pinNotification(this, newId, note.title, Markdown.plain(note.preview))
+        }
+        if (note.meta.remind > System.currentTimeMillis()) {
+            Reminders.cancel(this, note.id)
+            val title = if (note.meta.vault) getString(R.string.locked_note) else note.title
+            Reminders.schedule(this, newId, title, note.meta.remind)
+        }
+    }
+
     /** Stops reminders and notifications of a note that leaves the list. */
     private fun forget(note: Note) {
         Reminders.cancel(this, note.id)
@@ -500,14 +543,14 @@ class MainActivity : Activity() {
     private fun pinSelected() {
         val pin = selectedNotes().filter { !it.meta.vault }.any { !it.meta.pinned }
         finishBulk { notes ->
-            notes.filter { !it.meta.vault }.forEach { n -> store.updateMeta(n.id) { it.copy(pinned = pin) } }
+            notes.filter { !it.meta.vault }.each { n -> store.updateMeta(n.id) { it.copy(pinned = pin) } }
         }
     }
 
     private fun archiveSelected() {
         val archive = selectedNotes().filter { !it.meta.vault }.any { !it.meta.archived }
         finishBulk { notes ->
-            notes.filter { !it.meta.vault }.forEach { n -> store.updateMeta(n.id) { it.copy(archived = archive) } }
+            notes.filter { !it.meta.vault }.each { n -> store.updateMeta(n.id) { it.copy(archived = archive) } }
         }
     }
 
@@ -525,7 +568,7 @@ class MainActivity : Activity() {
                 val added = NoteMeta.splitList(input.text.toString())
                 if (added.isNotEmpty()) {
                     finishBulk { notes ->
-                        notes.filter { !it.meta.vault }.forEach { n ->
+                        notes.filter { !it.meta.vault }.each { n ->
                             store.updateMeta(n.id) { m ->
                                 m.copy(tags = (m.tags + added).distinctBy { it.lowercase() })
                             }
@@ -543,13 +586,13 @@ class MainActivity : Activity() {
             .setTitle(R.string.move)
             .setItems(labels.toTypedArray()) { _, which ->
                 when (which) {
-                    0 -> finishBulk { notes -> notes.forEach { store.move(it.id, "") } }
+                    0 -> finishBulk { notes -> notes.each { n -> relocate(n) { store.move(n.id, "") } } }
                     labels.size - 1 -> askNotebookName { path ->
-                        finishBulk { notes -> notes.forEach { store.move(it.id, path) } }
+                        finishBulk { notes -> notes.each { n -> relocate(n) { store.move(n.id, path) } } }
                     }
                     else -> {
                         val target = books[which - 1]
-                        finishBulk { notes -> notes.forEach { store.move(it.id, target) } }
+                        finishBulk { notes -> notes.each { n -> relocate(n) { store.move(n.id, target) } } }
                     }
                 }
             }
@@ -582,7 +625,7 @@ class MainActivity : Activity() {
                         )
                         val text = NoteMeta.build(meta, NoteStore.join(first.title, sections))
                         store.save(null, first.title, text, first.folder)
-                        list.forEach {
+                        list.each {
                             forget(it)
                             store.delete(it.id)
                         }
@@ -599,7 +642,7 @@ class MainActivity : Activity() {
             .setNegativeButton(R.string.cancel, null)
             .setPositiveButton(R.string.delete) { _, _ ->
                 finishBulk { notes ->
-                    notes.forEach {
+                    notes.each {
                         forget(it)
                         store.delete(it.id)
                     }
@@ -609,7 +652,7 @@ class MainActivity : Activity() {
     }
 
     private fun restoreSelected() {
-        finishBulk { notes -> notes.forEach { store.restore(it.id) } }
+        finishBulk { notes -> notes.each { n -> relocate(n) { store.restore(n.id) } } }
     }
 
     private fun deleteSelectedForever() {
@@ -617,7 +660,7 @@ class MainActivity : Activity() {
             .setMessage(R.string.delete_forever_confirm)
             .setNegativeButton(R.string.cancel, null)
             .setPositiveButton(R.string.delete_forever) { _, _ ->
-                finishBulk { notes -> notes.forEach { store.deleteForever(it.id) } }
+                finishBulk { notes -> notes.each { store.deleteForever(it.id) } }
             }
             .show()
     }
@@ -697,6 +740,7 @@ class MainActivity : Activity() {
                     Toast.makeText(this, R.string.error_save, Toast.LENGTH_SHORT).show()
                 }
             }
+            Widgets.refreshNotes(this)
             runOnUiThread { if (!isDestroyed) reload() }
         }
     }

@@ -300,6 +300,7 @@ class DrawActivity : Activity() {
         private val redoStack = ArrayList<List<Stroke>>()
         private var current: ArrayList<Float>? = null
         private var erasedThisTouch = false
+        private var eraseStart: List<Stroke>? = null
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
@@ -349,7 +350,8 @@ class DrawActivity : Activity() {
                 MotionEvent.ACTION_DOWN -> {
                     parent?.requestDisallowInterceptTouchEvent(true)
                     if (erasing) {
-                        remember()
+                        // Undo history only changes when the eraser really removes something.
+                        eraseStart = ArrayList(strokes)
                         erasedThisTouch = false
                         eraseAt(event.x / s, event.y / s)
                     } else {
@@ -373,7 +375,7 @@ class DrawActivity : Activity() {
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (erasing) {
-                        if (!erasedThisTouch && undoStack.isNotEmpty()) undoStack.removeAt(undoStack.size - 1)
+                        eraseStart = null
                     } else {
                         val points = current
                         if (points != null && points.size >= 2) {
@@ -410,6 +412,11 @@ class DrawActivity : Activity() {
                 hit
             }
             if (removed) {
+                if (!erasedThisTouch) {
+                    eraseStart?.let { undoStack.add(it) }
+                    if (undoStack.size > 100) undoStack.removeAt(0)
+                    redoStack.clear()
+                }
                 erasedThisTouch = true
                 changed = true
             }

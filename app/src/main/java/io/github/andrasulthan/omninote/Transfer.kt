@@ -512,9 +512,20 @@ object Transfer {
     fun maybeAutoBackup(ctx: Context) {
         if (backupTree(ctx) == null) return
         if (System.currentTimeMillis() - lastBackup(ctx) < DAY) return
+        if (!backupRunning.compareAndSet(false, true)) return
         val app = ctx.applicationContext
-        Thread { backupNow(app) }.start()
+        Thread {
+            try {
+                backupNow(app)
+            } catch (e: Exception) {
+                // Tried again next time the app opens.
+            } finally {
+                backupRunning.set(false)
+            }
+        }.start()
     }
+
+    private val backupRunning = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private fun displayName(ctx: Context, uri: Uri): String? {
         return try {

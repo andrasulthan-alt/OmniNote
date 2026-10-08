@@ -14,7 +14,7 @@ import android.os.Build
 
 /**
  * Reminders and notes shown in the notification panel (an idea from Scarlet Notes).
- * Uses the normal alarm, so no "exact alarm" permission is needed.
+ * Reminders ring on time with an exact alarm when Android allows it, otherwise as close as it can.
  * Locked notes never show their text in a notification.
  */
 object Reminders {
@@ -24,6 +24,7 @@ object Reminders {
     private const val KEY_PINNED = "notify_pinned"
     const val EXTRA_ID = "reminder_note_id"
     const val EXTRA_TITLE = "reminder_note_title"
+    const val ACTION_UNPIN = "io.github.andrasulthan.omninote.UNPIN"
 
     private fun manager(ctx: Context): NotificationManager =
         ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -80,7 +81,17 @@ object Reminders {
 
     fun schedule(ctx: Context, id: String, title: String, at: Long) {
         val alarms = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, alarmIntent(ctx, id, title))
+        val operation = alarmIntent(ctx, id, title)
+        val exact = Build.VERSION.SDK_INT < 31 || alarms.canScheduleExactAlarms()
+        try {
+            if (exact) {
+                alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, operation)
+            } else {
+                alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, operation)
+            }
+        } catch (e: SecurityException) {
+            alarms.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, operation)
+        }
     }
 
     fun cancel(ctx: Context, id: String) {
@@ -88,8 +99,9 @@ object Reminders {
         alarms.cancel(alarmIntent(ctx, id, ""))
     }
 
-    fun showReminder(ctx: Context, id: String, title: String, text: String) {
-        if (!canNotify(ctx)) return
+    /** Shows the reminder; returns false when notifications are turned off. */
+    fun showReminder(ctx: Context, id: String, title: String, text: String): Boolean {
+        if (!canNotify(ctx) || !manager(ctx).areNotificationsEnabled()) return false
         ensureChannels(ctx)
         val builder = Notification.Builder(ctx, CHANNEL_REMIND)
             .setSmallIcon(android.R.drawable.ic_popup_reminder)
@@ -97,11 +109,13 @@ object Reminders {
             .setColor(Ui.RED)
             .setCategory(Notification.CATEGORY_REMINDER)
             .setContentIntent(openNote(ctx, id, code(id)))
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setAutoCancel(true)
         if (text.isNotBlank()) {
             builder.setContentText(text).setStyle(Notification.BigTextStyle().bigText(text))
         }
         manager(ctx).notify(code(id), builder.build())
+        return true
     }
 
     // ---------- Notes shown in the notification panel ----------
@@ -131,8 +145,26 @@ object Reminders {
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
             .setContentIntent(openNote(ctx, id, code(id) + 1))
+            .setDeleteIntent(unpinIntent(ctx, id))
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
             .build()
         manager(ctx).notify(code(id) + 1, notification)
+    }
+
+    /** Android 14 lets people swipe away ongoing notifications; then the note is no longer pinned. */
+    private fun unpinIntent(ctx: Context, id: String): PendingIntent {
+        val intent = Intent(ctx, ReminderReceiver::class.java).apply {
+            action = ACTION_UNPIN
+            putExtra(EXTRA_ID, id)
+        }
+        return PendingIntent.getBroadcast(
+            ctx, code(id) + 2, intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+    }
+
+    fun forgetPinned(ctx: Context, id: String) {
+        savePinned(ctx, pinnedIds(ctx) - id)
     }
 
     fun unpinNotification(ctx: Context, id: String) {
@@ -151,7 +183,12 @@ object Reminders {
         val pinned = pinnedIds(ctx)
         for (note in notes) {
             val title = if (note.meta.vault) ctx.getString(R.string.locked_note) else note.title
-            if (note.meta.remind > now) schedule(ctx, note.id, title, note.meta.remind)
+            // Future reminders are set again; ones missed while the phone was off ring right away.
+            if (note.meta.remind > now) {
+                schedule(ctx, note.id, title, note.meta.remind)
+            } else if (note.meta.remind > 0 && !note.meta.vault) {
+                schedule(ctx, note.id, title, now + 5_000)
+            }
             if (note.id in pinned) {
                 if (note.meta.vault) {
                     unpinNotification(ctx, note.id)
@@ -167,6 +204,10 @@ object Reminders {
 class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val id = intent.getStringExtra(Reminders.EXTRA_ID) ?: return
+        if (intent.action == Reminders.ACTION_UNPIN) {
+            Reminders.forgetPinned(context, id)
+            return
+        }
         val title = intent.getStringExtra(Reminders.EXTRA_TITLE) ?: ""
         val pending = goAsync()
         Thread {
@@ -189,8 +230,9 @@ class ReminderReceiver : BroadcastReceiver() {
                     title.isNotBlank() -> title
                     else -> context.getString(R.string.app_name)
                 }
-                Reminders.showReminder(context, id, shownTitle, text)
-                if (!isLocked) {
+                val shown = Reminders.showReminder(context, id, shownTitle, text)
+                // Keep the reminder in the note when it could not be shown, so it is not lost.
+                if (shown && !isLocked) {
                     try {
                         store.updateMeta(id) { it.copy(remind = 0L) }
                     } catch (e: Exception) {

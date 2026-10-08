@@ -280,7 +280,7 @@ class NoteStore(private val ctx: Context) {
                 temp.delete()
             }
         }
-        cache.remove(id)
+        synchronized(cache) { cache.remove(id) }
     }
 
     /** Renames a note file to match a title and returns its new id. */
