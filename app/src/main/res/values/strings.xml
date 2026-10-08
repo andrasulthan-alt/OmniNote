@@ -200,4 +200,8 @@
     <string name="error_link">No app can open this link.</string>
     <string name="error_image">Could not add this image.</string>
     <string name="error_move">Could not move this note.</string>
+    <string name="crash_title">OmniNote closed unexpectedly</string>
+    <string name="crash_copy">Copy</string>
+    <string name="crash_copied">Copied</string>
+    <string name="vault_exists">A vault already exists in this notes folder. Open it with its password.</string>
 </resources>
