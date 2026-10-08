@@ -5,7 +5,7 @@ import java.io.File
 
 /**
  * Version history (an idea from Notesnook). Older versions of a note are kept on this
- * phone only, so they never fill the synced folder. Locked notes stay encrypted here too.
+ * phone only, so they never fill the synced folder. Versions of locked notes are kept encrypted.
  */
 object History {
 
@@ -22,7 +22,7 @@ object History {
         if (meta.created > 0) "c" + meta.created else "i" + Integer.toHexString(id.hashCode())
 
     /** Keeps the previous text of a note before it is overwritten (at most every 2 minutes). */
-    fun record(ctx: Context, key: String, previous: String) {
+    fun record(ctx: Context, key: String, previous: String, force: Boolean = false) {
         if (previous.isBlank()) return
         try {
             val folder = dir(ctx, key)
@@ -31,8 +31,8 @@ object History {
             val newest = files.firstOrNull()
             if (newest != null) {
                 val time = newest.name.removeSuffix(".md").toLongOrNull() ?: 0L
-                if (now - time < MIN_GAP) return
                 if (newest.readText() == previous) return
+                if (!force && now - time < MIN_GAP) return
             }
             File(folder, "$now.md").writeText(previous)
             files.drop(MAX_VERSIONS - 1).forEach { it.delete() }
@@ -47,4 +47,13 @@ object History {
             .sortedByDescending { it.time }
 
     fun read(version: Version): String = version.file.readText()
+
+    /** Deletes every kept version of a note (used when a note gets locked, so no plain copy stays behind). */
+    fun forget(ctx: Context, key: String) {
+        try {
+            File(File(ctx.filesDir, "history"), key).deleteRecursively()
+        } catch (e: Exception) {
+            // Nothing to clean up.
+        }
+    }
 }

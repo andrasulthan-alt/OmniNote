@@ -15,6 +15,9 @@ object Vault {
     @Volatile
     private var key: ByteArray? = null
 
+    /** A vault (or a locked note) already exists in this notes folder. */
+    class ExistsException : IllegalStateException("Vault already exists")
+
     class Config(val salt: ByteArray, val check: String, val hint: String)
 
     private fun encode(bytes: ByteArray): String = Base64.getEncoder().encodeToString(bytes)
@@ -54,6 +57,9 @@ object Vault {
 
     /** Creates the vault. Slow on purpose (Argon2id), so call it off the main thread. */
     fun setUp(store: NoteStore, password: String, hint: String) {
+        // Never replace an existing vault: a new salt would make every locked note unreadable,
+        // also on synced devices. A read error here stops the setup instead of guessing.
+        if (store.readHidden(FILE) != null || store.list().any { it.meta.vault }) throw ExistsException()
         val salt = VaultCrypto.newSalt()
         val newKey = VaultCrypto.deriveKey(password, salt)
         val check = VaultCrypto.makeCheck(newKey)

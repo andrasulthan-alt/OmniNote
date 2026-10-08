@@ -34,6 +34,7 @@ object AppLock {
 
     private var started = 0
     private var leftAt = 0L
+    private var changingConfig = false
 
     /** 0 off, 1 right away (15 s grace), 2 after 1 minute, 3 after 5 minutes. */
     fun mode(ctx: Context): Int =
@@ -57,13 +58,18 @@ object AppLock {
     }
 
     fun onStarted(activity: Activity) {
-        if (started == 0) onForeground(activity)
+        if (started == 0 && !changingConfig) onForeground(activity)
+        changingConfig = false
         started++
     }
 
     fun onStopped(activity: Activity) {
-        if (activity.isChangingConfigurations) return
         started = (started - 1).coerceAtLeast(0)
+        if (activity.isChangingConfigurations) {
+            // Rotation, dark mode and similar: the screen comes straight back, so do not count it as leaving.
+            changingConfig = true
+            return
+        }
         if (started == 0) leftAt = SystemClock.elapsedRealtime()
     }
 
@@ -248,12 +254,12 @@ object CrashLog {
         file.delete()
         if (text.isBlank()) return
         AlertDialog.Builder(activity)
-            .setTitle("OmniNote closed unexpectedly")
+            .setTitle(R.string.crash_title)
             .setMessage(text.take(3500))
-            .setPositiveButton("Copy") { _, _ ->
+            .setPositiveButton(R.string.crash_copy) { _, _ ->
                 val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 clipboard.setPrimaryClip(ClipData.newPlainText("OmniNote crash", text))
-                Toast.makeText(activity, "Copied", Toast.LENGTH_SHORT).show()
+                Toast.makeText(activity, R.string.crash_copied, Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton(android.R.string.cancel, null)
             .show()

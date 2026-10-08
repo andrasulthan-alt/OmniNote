@@ -207,6 +207,7 @@ class ReminderReceiver : BroadcastReceiver() {
 /** Puts reminders and pinned notes back after the phone restarts or the app updates. */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         val pending = goAsync()
         Thread {
             try {

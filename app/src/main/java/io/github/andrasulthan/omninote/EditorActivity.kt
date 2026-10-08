@@ -79,6 +79,15 @@ class EditorActivity : Activity() {
 
     // Images shown inside the editor, loaded once per path.
     private val imageCache = HashMap<String, Drawable?>()
+    private val loadingImages = HashSet<String>()
+    private var resumedOnce = false
+    private var revealed = false
+    private val restyle = Runnable {
+        if (::bodyView.isInitialized) {
+            Markdown.styleEditable(bodyView.text, p)
+            showInlineImages(bodyView.text)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -152,6 +161,7 @@ class EditorActivity : Activity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
             imeOptions = EditorInfo.IME_ACTION_NEXT or EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
             setSingleLine(true)
+            isSaveEnabled = false
         }
 
         metaView = Ui.text(this, 11f, p.muted).apply {
@@ -176,6 +186,7 @@ class EditorActivity : Activity() {
 
         bodyView = EditText(this).apply {
             id = ID_BODY
+            isSaveEnabled = false
             hint = getString(R.string.body_hint)
             setHintTextColor(p.muted)
             setTextColor(p.text)
@@ -199,8 +210,13 @@ class EditorActivity : Activity() {
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
                 override fun afterTextChanged(s: Editable?) {
                     if (s != null) {
-                        Markdown.styleEditable(s, p)
-                        showInlineImages(s)
+                        handler.removeCallbacks(restyle)
+                        if (s.length < STYLE_NOW_LIMIT) {
+                            Markdown.styleEditable(s, p)
+                            showInlineImages(s)
+                        } else {
+                            handler.postDelayed(restyle, STYLE_DELAY_MS)
+                        }
                         updateCount()
                     }
                     if (!restoring) {
@@ -305,6 +321,42 @@ class EditorActivity : Activity() {
         updateUndoButtons()
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (!resumedOnce) {
+            resumedOnce = true
+            return
+        }
+        val id = noteId ?: return
+        if (deleted) return
+        if (locked) {
+            // The vault closed while the note was open: hide the text and ask for the password again.
+            if (revealed && !Vault.isOpen()) {
+                revealed = false
+                restoring = true
+                titleView.setText("")
+                bodyView.setText("")
+                restoring = false
+                clearUndo()
+                savedText = buildText()
+                if (reading) showRead()
+                loadExisting(id)
+            }
+            return
+        }
+        // The note changed on disk (sync, widget, another window) while nothing was edited here.
+        if (buildText() != savedText) return
+        val raw = try {
+            store.read(id)
+        } catch (e: Exception) {
+            return
+        }
+        if (raw != savedText && !Vault.isLocked(raw)) {
+            showPlain(raw)
+            if (reading) showRead()
+        }
+    }
+
     override fun onPause() {
         super.onPause()
         if (!deleted) save()
@@ -313,6 +365,7 @@ class EditorActivity : Activity() {
     override fun onDestroy() {
         super.onDestroy()
         handler.removeCallbacks(endBurst)
+        handler.removeCallbacks(restyle)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -327,7 +380,7 @@ class EditorActivity : Activity() {
         for (span in s.getSpans(0, s.length, ImageSpan::class.java)) s.removeSpan(span)
         for (m in IMAGE_LINK.findAll(s)) {
             val path = m.groupValues[1]
-            val picture = imageCache.getOrPut(path) { loadImage(path) } ?: continue
+            val picture = cachedImage(path) ?: continue
             s.setSpan(
                 ImageSpan(picture, ImageSpan.ALIGN_BOTTOM),
                 m.range.first,
@@ -335,6 +388,24 @@ class EditorActivity : Activity() {
                 Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
             )
         }
+    }
+
+    /** Returns a decoded picture, or starts decoding it off the main thread and returns null for now. */
+    private fun cachedImage(path: String): Drawable? {
+        if (imageCache.containsKey(path)) return imageCache[path]
+        if (!loadingImages.add(path)) return null
+        Thread {
+            val picture = loadImage(path)
+            runOnUiThread {
+                loadingImages.remove(path)
+                imageCache[path] = picture
+                if (picture != null && !isDestroyed) {
+                    refreshInlineImages()
+                    if (reading) showRead()
+                }
+            }
+        }.start()
+        return null
     }
 
     private fun refreshInlineImages() {
@@ -401,6 +472,8 @@ class EditorActivity : Activity() {
         }
         if (raw == null) {
             Toast.makeText(this, R.string.error_open, Toast.LENGTH_LONG).show()
+            deleted = true
+            finish()
             return
         }
         folder = store.folderOf(id)
@@ -414,6 +487,7 @@ class EditorActivity : Activity() {
         val reveal = {
             try {
                 showPlain(Vault.unseal(raw))
+                revealed = true
                 setEditable(true)
             } catch (e: Exception) {
                 Toast.makeText(this, R.string.error_open, Toast.LENGTH_LONG).show()
@@ -665,6 +739,7 @@ class EditorActivity : Activity() {
     }
 
     private fun previewVersion(version: History.Version, label: String) {
+        val id = noteId ?: return
         val plain = try {
             val raw = History.read(version)
             if (Vault.isLocked(raw)) Vault.unseal(raw) else raw
@@ -686,6 +761,12 @@ class EditorActivity : Activity() {
             .setNegativeButton(R.string.cancel, null)
             .setPositiveButton(R.string.history_restore) { _, _ ->
                 save()
+                // Keep the current text as a version too, so restoring can be undone from history.
+                try {
+                    History.record(this, historyKey(id), store.read(id), force = true)
+                } catch (e: Exception) {
+                    // Nothing to keep.
+                }
                 showPlain(plain)
                 savedText = ""
                 save()
@@ -805,28 +886,39 @@ class EditorActivity : Activity() {
                 Toast.makeText(this, R.string.error_save, Toast.LENGTH_SHORT).show()
                 return@ensureOpen
             }
+            val plainKey = historyKey(id)
             locked = true
+            revealed = true
             savedText = ""
             save()
             val renamed = store.rename(id, Vault.lockedTitle())
             followNewId(id, renamed)
             noteId = renamed
             Reminders.unpinNotification(this, renamed)
+            // Older versions were kept as plain text; remove them so nothing readable stays behind.
+            History.forget(this, plainKey)
             Widgets.refreshNotes(this)
             updateMetaLine()
         }
     }
 
     private fun removeLock() {
-        locked = false
-        savedText = ""
-        save()
-        val id = noteId ?: return
-        val renamed = store.rename(id, titleView.text.toString().ifBlank { "Note" })
-        followNewId(id, renamed)
-        noteId = renamed
-        Widgets.refreshNotes(this)
-        updateMetaLine()
+        VaultUi.ensureOpen(this, store) {
+            locked = false
+            revealed = false
+            savedText = ""
+            save()
+            val id = noteId ?: return@ensureOpen
+            val renamed = try {
+                store.rename(id, titleView.text.toString().ifBlank { "Note" })
+            } catch (e: Exception) {
+                id
+            }
+            followNewId(id, renamed)
+            noteId = renamed
+            Widgets.refreshNotes(this)
+            updateMetaLine()
+        }
     }
 
     // ---------- Reminders and notifications ----------
@@ -934,7 +1026,7 @@ class EditorActivity : Activity() {
             { line -> toggleTask(line) },
             { url -> openLink(url) },
             { title -> openNoteByTitle(title) },
-            { path -> loadImage(path) },
+            { path -> cachedImage(path) },
             getString(R.string.image_missing)
         )
         bodyView.visibility = View.GONE
@@ -970,10 +1062,15 @@ class EditorActivity : Activity() {
     }
 
     private fun openLink(url: String) {
-        val full = if (url.contains("://") || url.startsWith("mailto:")) url else "https://$url"
+        val trimmed = url.trim()
+        val full = if (SCHEME.containsMatchIn(trimmed)) trimmed else "https://$trimmed"
+        if (full.startsWith("file:", ignoreCase = true) || full.startsWith("content:", ignoreCase = true)) {
+            Toast.makeText(this, R.string.error_link, Toast.LENGTH_SHORT).show()
+            return
+        }
         try {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(full)))
-        } catch (e: ActivityNotFoundException) {
+        } catch (e: Exception) {
             Toast.makeText(this, R.string.error_link, Toast.LENGTH_SHORT).show()
         }
     }
@@ -1000,10 +1097,11 @@ class EditorActivity : Activity() {
         return try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             store.openAttachment(path)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-            if (bounds.outWidth <= 0) return null
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
             val maxWidth = resources.displayMetrics.widthPixels - Ui.dp(this, 40f)
+            val maxHeight = resources.displayMetrics.heightPixels * 2
             var sample = 1
-            while (bounds.outWidth / sample > maxWidth * 2) sample *= 2
+            while (bounds.outWidth / sample > maxWidth * 2 || bounds.outHeight / sample > maxHeight * 2) sample *= 2
             val options = BitmapFactory.Options().apply { inSampleSize = sample }
             val bitmap = store.openAttachment(path)?.use {
                 BitmapFactory.decodeStream(it, null, options)
@@ -1012,6 +1110,8 @@ class EditorActivity : Activity() {
             val height = (bitmap.height.toFloat() * width / bitmap.width).toInt()
             BitmapDrawable(resources, bitmap).apply { setBounds(0, 0, width, height) }
         } catch (e: Exception) {
+            null
+        } catch (e: OutOfMemoryError) {
             null
         }
     }
@@ -1414,6 +1514,9 @@ class EditorActivity : Activity() {
     }
 
     companion object {
+        private val SCHEME = Regex("^[a-zA-Z][a-zA-Z0-9+.-]*:(?!\\d)")
+        private const val STYLE_NOW_LIMIT = 6000
+        private const val STYLE_DELAY_MS = 250L
         const val EXTRA_ID = "note_id"
         const val EXTRA_TITLE = "note_title"
         const val EXTRA_FOLDER = "note_folder"

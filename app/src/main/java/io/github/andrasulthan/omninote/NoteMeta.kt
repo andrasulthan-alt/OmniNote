@@ -22,6 +22,10 @@ data class NoteMeta(
     val extra: List<String> = emptyList()
 ) {
     companion object {
+        private val CLOSING_FENCE = Regex("\n---[ \t]*(?=\n|$)")
+        private fun isTrue(value: String): Boolean =
+            unquote(value).lowercase() in setOf("true", "yes", "on", "1")
+
         val COLORS = listOf("red", "orange", "yellow", "green", "blue", "purple", "gray")
 
         fun colorValue(name: String?): Int? = when (name) {
@@ -39,10 +43,11 @@ data class NoteMeta(
         fun parse(text: String): Pair<NoteMeta, String> {
             val t = text.replace("\r\n", "\n")
             if (!t.startsWith("---\n")) return NoteMeta() to t
-            val end = t.indexOf("\n---", 3)
-            if (end < 0) return NoteMeta() to t
-            val afterFence = t.indexOf('\n', end + 4).let { if (it < 0) t.length else it + 1 }
-            val block = t.substring(4, end)
+            // The closing fence must be a whole "---" line; an empty block ("---\n---") is allowed.
+            val fence = CLOSING_FENCE.find(t, 3) ?: return NoteMeta() to t
+            val end = fence.range.first
+            val afterFence = (fence.range.last + 1).let { if (it < t.length && t[it] == '\n') it + 1 else it }
+            val block = if (end > 4) t.substring(4, end) else ""
 
             var pinned = false
             var archived = false
@@ -68,8 +73,8 @@ data class NoteMeta(
                 val key = if (colon > 0) line.substring(0, colon).trim().lowercase() else ""
                 val value = if (colon > 0) line.substring(colon + 1).trim() else ""
                 when (key) {
-                    "pinned" -> pinned = value.equals("true", ignoreCase = true)
-                    "archived" -> archived = value.equals("true", ignoreCase = true)
+                    "pinned" -> pinned = isTrue(value)
+                    "archived" -> archived = isTrue(value)
                     "color" -> color = unquote(value).lowercase().ifBlank { null }
                     "tags" -> if (value.isEmpty()) inTags = true else tags.addAll(splitList(value))
                     "created" -> created = parseTime(unquote(value))
@@ -128,13 +133,23 @@ data class NoteMeta(
             formatter("yyyy-MM-dd'T'HH:mm:ss'Z'").format(java.util.Date(millis))
 
         fun parseTime(value: String): Long {
-            for (pattern in listOf("yyyy-MM-dd'T'HH:mm:ss'Z'", "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd")) {
-                try {
-                    val date = formatter(pattern).parse(value)
-                    if (date != null) return date.time
-                } catch (e: Exception) {
-                    // Try the next format.
-                }
+            val v = value.trim()
+            if (v.isEmpty()) return 0L
+            v.toLongOrNull()?.let { n -> return if (n in 1..99_999_999_999L) n * 1000 else n }
+            val position = java.text.ParsePosition(0)
+            for (pattern in listOf("yyyy-MM-dd'T'HH:mm:ss'Z'", "yyyy-MM-dd'T'HH:mm:ssXXX")) {
+                position.index = 0
+                position.errorIndex = -1
+                val date = try { formatter(pattern).parse(v, position) } catch (e: Exception) { null }
+                if (date != null && position.index == v.length) return date.time
+            }
+            // Times without a zone are local, like in Obsidian and most editors.
+            for (pattern in listOf("yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd'T'HH:mm", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm", "yyyy-MM-dd")) {
+                position.index = 0
+                position.errorIndex = -1
+                val local = SimpleDateFormat(pattern, Locale.US).apply { isLenient = false }
+                val date = try { local.parse(v, position) } catch (e: Exception) { null }
+                if (date != null && position.index == v.length) return date.time
             }
             return 0L
         }

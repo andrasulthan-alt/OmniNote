@@ -140,8 +140,8 @@ class NoteStore(private val ctx: Context) {
             if (trash) {
                 val files = File(localDir, TRASH).listFiles() ?: emptyArray()
                 for (f in files) {
-                    if (f.isFile && f.name.endsWith(MD)) {
-                        notes.add(toNote(f.absolutePath, f.name, f.readText(), f.lastModified(), TRASH))
+                    if (f.isFile && isMd(f.name)) {
+                        load(f.absolutePath, f.name, f.lastModified(), TRASH, notes) { f.readText() }
                     }
                 }
             } else {
@@ -152,9 +152,9 @@ class NoteStore(private val ctx: Context) {
                 val trashId = folderDocId(tree, TRASH, create = false)
                 if (trashId != null) {
                     for (d in children(tree, trashId)) {
-                        if (!d.isDir && d.name.endsWith(MD)) {
+                        if (!d.isDir && isMd(d.name)) {
                             val uri = DocumentsContract.buildDocumentUriUsingTree(tree, d.id).toString()
-                            notes.add(toNote(uri, d.name, read(uri), d.modified, TRASH))
+                            load(uri, d.name, d.modified, TRASH, notes) { read(uri) }
                         }
                     }
                 }
@@ -180,8 +180,8 @@ class NoteStore(private val ctx: Context) {
         for (f in files) {
             if (f.isDirectory) {
                 if (!isSpecial(f.name)) walkLocal(f, joinPath(path, f.name), out)
-            } else if (f.name.endsWith(MD)) {
-                out.add(toNote(f.absolutePath, f.name, f.readText(), f.lastModified(), path))
+            } else if (isMd(f.name)) {
+                load(f.absolutePath, f.name, f.lastModified(), path, out) { f.readText() }
             }
         }
     }
@@ -202,9 +202,9 @@ class NoteStore(private val ctx: Context) {
         for (d in children(tree, docId)) {
             if (d.isDir) {
                 if (!isSpecial(d.name)) walkTree(tree, d.id, joinPath(path, d.name), out, depth + 1)
-            } else if (d.name.endsWith(MD)) {
+            } else if (isMd(d.name)) {
                 val uri = DocumentsContract.buildDocumentUriUsingTree(tree, d.id).toString()
-                out.add(toNote(uri, d.name, read(uri), d.modified, path))
+                load(uri, d.name, d.modified, path, out) { read(uri) }
             }
         }
     }
@@ -244,7 +244,8 @@ class NoteStore(private val ctx: Context) {
             } ?: ""
         } else {
             val f = File(id)
-            if (f.exists()) f.readText() else ""
+            if (!f.exists()) throw java.io.FileNotFoundException(id)
+            f.readText()
         }
     }
 
@@ -270,8 +271,16 @@ class NoteStore(private val ctx: Context) {
                 it.write(text.toByteArray(Charsets.UTF_8))
             }
         } else {
-            File(id).writeText(text)
+            // Write to a temporary file first, so a crash never leaves a half-written note.
+            val target = File(id)
+            val temp = File(target.parentFile, "." + target.name + ".tmp")
+            temp.writeText(text)
+            if (!temp.renameTo(target)) {
+                target.writeText(text)
+                temp.delete()
+            }
         }
+        cache.remove(id)
     }
 
     /** Renames a note file to match a title and returns its new id. */
@@ -425,7 +434,7 @@ class NoteStore(private val ctx: Context) {
             mime.endsWith("gif") -> "gif"
             else -> "jpg"
         }
-        val name = "img-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) + "." + ext
+        val name = "img-" + SimpleDateFormat("yyyyMMdd-HHmmss-SSS", Locale.US).format(Date()) + "." + ext
         val input = ctx.contentResolver.openInputStream(source)
             ?: throw IllegalStateException("Cannot read image")
         input.use { inp ->
@@ -441,6 +450,8 @@ class NoteStore(private val ctx: Context) {
                     ctx.contentResolver, dirUri, "application/octet-stream", name
                 ) ?: throw IllegalStateException("Cannot create $name")
                 ctx.contentResolver.openOutputStream(file, "w")?.use { inp.copyTo(it) }
+                // The folder may have renamed the file (for example "img (1).jpg"); link the real name.
+                return "$ATTACH/" + (displayName(file) ?: name)
             }
         }
         return "$ATTACH/$name"
@@ -551,6 +562,22 @@ class NoteStore(private val ctx: Context) {
         return file
     }
 
+    /** Reads a note only when it changed since the last listing; one broken file never hides the others. */
+    private fun load(id: String, name: String, modified: Long, folder: String, out: MutableList<Note>, text: () -> String) {
+        val cached = synchronized(cache) { cache[id] }
+        if (cached != null && modified > 0 && cached.first == modified) {
+            out.add(cached.second)
+            return
+        }
+        try {
+            val note = toNote(id, name, text(), modified, folder)
+            synchronized(cache) { cache[id] = modified to note }
+            out.add(note)
+        } catch (e: Exception) {
+            // Skip a file that cannot be read right now; it shows up again on the next refresh.
+        }
+    }
+
     private fun toNote(id: String, name: String, text: String, modified: Long, folder: String): Note {
         val (meta, content) = NoteMeta.parse(text)
         if (meta.vault) return Note(id, "", "", modified, folder, meta, "", name)
@@ -560,7 +587,7 @@ class NoteStore(private val ctx: Context) {
             .filter { it.isNotEmpty() }
             .take(3)
             .joinToString("\n")
-        return Note(id, title.ifBlank { name.removeSuffix(MD) }, preview, modified, folder, meta, body, name)
+        return Note(id, title.ifBlank { name.substringBeforeLast('.') }, preview, modified, folder, meta, body, name)
     }
 
     companion object {
@@ -576,6 +603,10 @@ class NoteStore(private val ctx: Context) {
         private const val HIDDEN = ".omninote"
         const val TRASH = ".trash"
         private const val MAX_DEPTH = 8
+        private val cache = HashMap<String, Pair<Long, Note>>()
+
+        fun isMd(name: String): Boolean = name.lowercase().endsWith(MD) && !name.startsWith(".")
+
         private val CONFLICT = Regex("\\.sync-conflict-\\d{8}-\\d{6}-[A-Z0-9]{7}")
 
         private fun isSpecial(name: String): Boolean = name.startsWith(".") || name == ATTACH

@@ -78,9 +78,13 @@ object VaultUi {
                         ok.text = activity.getString(R.string.vault_working)
                         val hintText = hint.text.toString().trim()
                         Thread {
+                            var exists = false
                             val success = try {
                                 Vault.setUp(store, password, hintText)
                                 true
+                            } catch (e: Vault.ExistsException) {
+                                exists = true
+                                false
                             } catch (e: Exception) {
                                 false
                             }
@@ -93,7 +97,7 @@ object VaultUi {
                                 } else {
                                     ok.isEnabled = true
                                     ok.text = activity.getString(R.string.save)
-                                    Toast.makeText(activity, R.string.error_save, Toast.LENGTH_LONG).show()
+                                    Toast.makeText(activity, if (exists) R.string.vault_exists else R.string.error_save, Toast.LENGTH_LONG).show()
                                 }
                             }
                         }.start()

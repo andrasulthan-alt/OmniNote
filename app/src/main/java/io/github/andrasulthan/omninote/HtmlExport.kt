@@ -27,6 +27,7 @@ object HtmlExport {
 
     /** Kept alive until Android has finished preparing the print job. */
     private var printing: WebView? = null
+    private val SAFE_LINK = Regex("^(https?|mailto|tel):", RegexOption.IGNORE_CASE)
 
     private val CSS = """
         body{margin:0;padding:24px;font-family:Roboto,"Segoe UI",Arial,sans-serif;color:#111;background:#fff;line-height:1.55;font-size:15px}
@@ -72,6 +73,7 @@ object HtmlExport {
 
     /** Opens Android's print screen for the page; choose "Save as PDF" there. */
     fun print(activity: Activity, html: String, jobName: String) {
+        printing?.destroy()
         val web = WebView(activity)
         printing = web
         web.settings.javaScriptEnabled = false
@@ -85,7 +87,11 @@ object HtmlExport {
                 val attributes = PrintAttributes.Builder()
                     .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
                     .build()
-                manager.print(jobName, view.createPrintDocumentAdapter(jobName), attributes)
+                try {
+                    manager.print(jobName, view.createPrintDocumentAdapter(jobName), attributes)
+                } catch (e: Exception) {
+                    android.widget.Toast.makeText(activity, R.string.export_failed, android.widget.Toast.LENGTH_SHORT).show()
+                }
             }
         }
         web.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
@@ -197,7 +203,11 @@ object HtmlExport {
         s = esc(s)
         s = IMAGE.replace(s) { m -> image(m.groupValues[2], m.groupValues[1], store) }
         s = WIKI.replace(s) { m -> "<span class=\"wiki\">" + m.groupValues[1] + "</span>" }
-        s = LINK.replace(s) { m -> "<a href=\"" + m.groupValues[2] + "\">" + m.groupValues[1] + "</a>" }
+        s = LINK.replace(s) { m ->
+            val target = m.groupValues[2].trim()
+            val safe = SAFE_LINK.containsMatchIn(target) || !target.contains(":")
+            if (safe) "<a href=\"" + target + "\">" + m.groupValues[1] + "</a>" else m.groupValues[1]
+        }
         s = BOLD.replace(s) { m -> "<strong>" + m.groupValues[1] + "</strong>" }
         s = STRIKE.replace(s) { m -> "<del>" + m.groupValues[1] + "</del>" }
         s = ITALIC.replace(s) { m -> "<em>" + m.groupValues[1] + "</em>" }

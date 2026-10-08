@@ -779,7 +779,7 @@ class MainActivity : Activity() {
     }
 
     private fun chooseFolder() {
-        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_FOLDER)
+        openTree(REQ_FOLDER)
     }
 
     /** Switches the notes location and offers to copy the notes from the old one. */
@@ -930,7 +930,15 @@ class MainActivity : Activity() {
     }
 
     private fun chooseBackupFolder() {
-        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_BACKUP_FOLDER)
+        openTree(REQ_BACKUP_FOLDER)
+    }
+
+    private fun openTree(request: Int) {
+        try {
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), request)
+        } catch (e: Exception) {
+            Toast.makeText(this, R.string.error_folder, Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun runBackupNow() {
