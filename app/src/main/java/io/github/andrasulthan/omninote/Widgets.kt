@@ -30,11 +30,33 @@ object Widgets {
         prefs(ctx).edit().remove("w$widgetId").apply()
     }
 
-    private fun activity(ctx: Context, requestCode: Int, intent: Intent): PendingIntent =
-        PendingIntent.getActivity(
-            ctx, requestCode, intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+    /**
+     * Opens a screen from a widget. CLEAR_TOP returns to that screen if it is already open
+     * (an open note is saved first) instead of piling up copies; the notes list keeps its place.
+     */
+    private fun activity(ctx: Context, requestCode: Int, intent: Intent): PendingIntent {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        if (intent.component?.className == MainActivity::class.java.name) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
+        return PendingIntent.getActivity(
+            ctx, requestCode, intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
+    }
+
+    private val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private val refreshQueued = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Redraws every note widget off the main thread; several quick requests become one redraw. */
+    fun refreshNotes(ctx: Context) {
+        val app = ctx.applicationContext
+        if (!refreshQueued.compareAndSet(false, true)) return
+        worker.execute {
+            refreshQueued.set(false)
+            refreshNow(app)
+        }
+    }
 
     fun updateQuick(ctx: Context, manager: AppWidgetManager, widgetId: Int) {
         val views = RemoteViews(ctx.packageName, R.layout.widget_quick)
@@ -93,7 +115,7 @@ object Widgets {
     }
 
     /** Redraws every note widget, for example after a note was saved. */
-    fun refreshNotes(ctx: Context) {
+    private fun refreshNow(ctx: Context) {
         try {
             val manager = AppWidgetManager.getInstance(ctx) ?: return
             val ids = manager.getAppWidgetIds(ComponentName(ctx, NoteWidget::class.java))
@@ -126,7 +148,18 @@ class QuickWidget : AppWidgetProvider() {
 /** Shows one chosen note on the home screen. */
 class NoteWidget : AppWidgetProvider() {
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
-        for (id in appWidgetIds) Widgets.updateNote(context, appWidgetManager, id)
+        // Reading notes can be slow on a synced folder, so draw the widgets off the main thread.
+        val pending = goAsync()
+        val app = context.applicationContext
+        Thread {
+            try {
+                for (id in appWidgetIds) Widgets.updateNote(app, appWidgetManager, id)
+            } catch (e: Exception) {
+                // Drawn again on the next update.
+            } finally {
+                pending.finish()
+            }
+        }.start()
     }
 
     override fun onDeleted(context: Context, appWidgetIds: IntArray) {
@@ -178,7 +211,7 @@ class NoteWidgetConfigActivity : Activity() {
 
     private fun choose(note: Note) {
         Widgets.setNote(this, widgetId, note.id)
-        Widgets.updateNote(this, AppWidgetManager.getInstance(this), widgetId)
+        Widgets.refreshNotes(this)
         setResult(RESULT_OK, Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId))
         finish()
     }

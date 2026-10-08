@@ -80,6 +80,8 @@ class EditorActivity : Activity() {
     // Images shown inside the editor, loaded once per path.
     private val imageCache = HashMap<String, Drawable?>()
     private val loadingImages = HashSet<String>()
+    private val io = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private var loadingNote = false
     private var resumedOnce = false
     private var revealed = false
     private val restyle = Runnable {
@@ -328,7 +330,7 @@ class EditorActivity : Activity() {
             return
         }
         val id = noteId ?: return
-        if (deleted) return
+        if (deleted || loadingNote) return
         if (locked) {
             // The vault closed while the note was open: hide the text and ask for the password again.
             if (revealed && !Vault.isOpen()) {
@@ -345,15 +347,19 @@ class EditorActivity : Activity() {
             return
         }
         // The note changed on disk (sync, widget, another window) while nothing was edited here.
-        if (buildText() != savedText) return
-        val raw = try {
-            store.read(id)
-        } catch (e: Exception) {
-            return
-        }
-        if (raw != savedText && !Vault.isLocked(raw)) {
-            showPlain(raw)
-            if (reading) showRead()
+        if (loadingNote || buildText() != savedText) return
+        val known = savedText
+        inBackground({
+            try {
+                store.read(id)
+            } catch (e: Exception) {
+                null
+            }
+        }) { raw ->
+            if (raw != null && raw != known && noteId == id && !locked && buildText() == known && !Vault.isLocked(raw)) {
+                showPlain(raw)
+                if (reading) showRead()
+            }
         }
     }
 
@@ -366,6 +372,16 @@ class EditorActivity : Activity() {
         super.onDestroy()
         handler.removeCallbacks(endBurst)
         handler.removeCallbacks(restyle)
+        io.shutdown()
+    }
+
+    /** Reads or searches the notes folder off the main thread, then continues on screen. */
+    private fun <T> inBackground(work: () -> T, then: (T) -> Unit) {
+        if (io.isShutdown) return
+        io.execute {
+            val result = work()
+            runOnUiThread { if (!isDestroyed) then(result) }
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -465,21 +481,33 @@ class EditorActivity : Activity() {
     // ---------- Loading ----------
 
     private fun loadExisting(id: String) {
-        val raw = try {
-            store.read(id)
-        } catch (e: Exception) {
-            null
+        loadingNote = true
+        setEditable(false)
+        inBackground({
+            try {
+                Triple(store.read(id), store.folderOf(id), NoteStore.isConflictName(store.fileNameOf(id)))
+            } catch (e: Exception) {
+                null
+            }
+        }) { found ->
+            loadingNote = false
+            showLoaded(found)
         }
+    }
+
+    private fun showLoaded(found: Triple<String, String, Boolean>?) {
+        val raw = found?.first
         if (raw == null) {
             Toast.makeText(this, R.string.error_open, Toast.LENGTH_LONG).show()
             deleted = true
             finish()
             return
         }
-        folder = store.folderOf(id)
-        if (NoteStore.isConflictName(store.fileNameOf(id))) showConflictBar()
+        folder = found.second
+        if (found.third) showConflictBar()
         if (!Vault.isLocked(raw)) {
             showPlain(raw)
+            setEditable(true)
             return
         }
         locked = true
@@ -535,6 +563,7 @@ class EditorActivity : Activity() {
     private fun fileTextFor(plain: String): String = if (locked) Vault.seal(plain) else plain
 
     private fun save() {
+        if (loadingNote) return
         val title = titleView.text.toString()
         val body = bodyView.text.toString()
         val plain = buildText()
@@ -542,14 +571,6 @@ class EditorActivity : Activity() {
         if (noteId == null && title.isBlank() && body.isBlank()) return
         if (noteId == null && title.isBlank() && body.trim() == "- [ ]") return
         val isNew = noteId == null
-        if (isNew && !locked && title.isNotBlank()) {
-            val clash = try {
-                store.findByTitle(title) != null
-            } catch (e: Exception) {
-                false
-            }
-            if (clash) Toast.makeText(this, R.string.duplicate_title, Toast.LENGTH_SHORT).show()
-        }
         if (locked && !Vault.isOpen()) {
             Toast.makeText(this, R.string.vault_closed, Toast.LENGTH_LONG).show()
             return
@@ -571,9 +592,25 @@ class EditorActivity : Activity() {
                 Reminders.pinNotification(this, id, title.ifBlank { getString(R.string.app_name) }, previewText())
             }
             Widgets.refreshNotes(this)
+            if (isNew && !locked && title.isNotBlank()) warnIfTitleTaken(id, title)
         } catch (e: Exception) {
             if (!locked) keepDraft(plain)
             Toast.makeText(this, R.string.error_save, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** Tells, without blocking typing, when another note already has this title. */
+    private fun warnIfTitleTaken(id: String, title: String) {
+        inBackground({
+            try {
+                store.list().any {
+                    it.id != id && !it.meta.vault && !it.isConflict && it.title.equals(title.trim(), ignoreCase = true)
+                }
+            } catch (e: Exception) {
+                false
+            }
+        }) { clash ->
+            if (clash) Toast.makeText(this, R.string.duplicate_title, Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -804,15 +841,22 @@ class EditorActivity : Activity() {
         conflictBar.visibility = View.VISIBLE
     }
 
-    private fun originalNote(): Note? {
-        val id = noteId ?: return null
-        val found = try {
-            store.findOriginal(id)
-        } catch (e: Exception) {
-            null
+    /** Finds the note this sync conflict belongs to, off the main thread. */
+    private fun withOriginal(then: (Note) -> Unit) {
+        val id = noteId ?: return
+        inBackground({
+            try {
+                store.findOriginal(id)
+            } catch (e: Exception) {
+                null
+            }
+        }) { found ->
+            if (found == null) {
+                Toast.makeText(this, R.string.conflict_no_original, Toast.LENGTH_LONG).show()
+            } else {
+                then(found)
+            }
         }
-        if (found == null) Toast.makeText(this, R.string.conflict_no_original, Toast.LENGTH_LONG).show()
-        return found
     }
 
     private fun finishConflict(openId: String?) {
@@ -832,25 +876,22 @@ class EditorActivity : Activity() {
         finish()
     }
 
-    private fun keepThisVersion() {
-        val original = originalNote() ?: return
+    private fun keepThisVersion() = withOriginal { original ->
         try {
             History.record(this, History.keyFor(original.id, original.meta), store.read(original.id))
             store.save(original.id, "", fileTextFor(buildText()))
         } catch (e: Exception) {
             Toast.makeText(this, R.string.error_save, Toast.LENGTH_LONG).show()
-            return
+            return@withOriginal
         }
         finishConflict(original.id)
     }
 
-    private fun keepOriginal() {
-        val original = originalNote() ?: return
+    private fun keepOriginal() = withOriginal { original ->
         finishConflict(original.id)
     }
 
-    private fun mergeWithOriginal() {
-        val original = originalNote() ?: return
+    private fun mergeWithOriginal() = withOriginal { original ->
         try {
             val raw = store.read(original.id)
             val originalPlain = if (Vault.isLocked(raw)) Vault.unseal(raw) else raw
@@ -865,13 +906,12 @@ class EditorActivity : Activity() {
             store.save(original.id, "", fileTextFor(merged))
         } catch (e: Exception) {
             Toast.makeText(this, R.string.error_save, Toast.LENGTH_LONG).show()
-            return
+            return@withOriginal
         }
         finishConflict(original.id)
     }
 
-    private fun openOriginal() {
-        val original = originalNote() ?: return
+    private fun openOriginal() = withOriginal { original ->
         save()
         startActivity(Intent(this, EditorActivity::class.java).putExtra(EXTRA_ID, original.id))
     }
@@ -1084,19 +1124,22 @@ class EditorActivity : Activity() {
     /** Opens the note with this title, or starts a new one when it does not exist yet. */
     private fun openNoteByTitle(title: String) {
         save()
-        val found = try {
-            store.findByTitle(title)
-        } catch (e: Exception) {
-            null
+        inBackground({
+            try {
+                store.findByTitle(title)
+            } catch (e: Exception) {
+                null
+            }
+        }) { found ->
+            val next = Intent(this, EditorActivity::class.java)
+            if (found != null) {
+                next.putExtra(EXTRA_ID, found.id)
+            } else {
+                next.putExtra(EXTRA_TITLE, title)
+                next.putExtra(EXTRA_FOLDER, folder)
+            }
+            startActivity(next)
         }
-        val next = Intent(this, EditorActivity::class.java)
-        if (found != null) {
-            next.putExtra(EXTRA_ID, found.id)
-        } else {
-            next.putExtra(EXTRA_TITLE, title)
-            next.putExtra(EXTRA_FOLDER, folder)
-        }
-        startActivity(next)
     }
 
     private fun loadImage(path: String): Drawable? {
@@ -1178,22 +1221,25 @@ class EditorActivity : Activity() {
 
     private fun pickNoteLink() {
         val current = titleView.text.toString().trim()
-        val titles = try {
-            store.list()
-                .filter { !it.meta.vault && !it.isConflict }
-                .map { it.title }
-                .filter { !it.equals(current, ignoreCase = true) }
-        } catch (e: Exception) {
-            emptyList()
+        inBackground({
+            try {
+                store.list()
+                    .filter { !it.meta.vault && !it.isConflict }
+                    .map { it.title }
+                    .filter { !it.equals(current, ignoreCase = true) }
+            } catch (e: Exception) {
+                emptyList()
+            }
+        }) { titles ->
+            if (titles.isEmpty()) {
+                Toast.makeText(this, R.string.no_other_notes, Toast.LENGTH_SHORT).show()
+            } else {
+                AlertDialog.Builder(this)
+                    .setTitle(R.string.pick_note)
+                    .setItems(titles.toTypedArray()) { _, which -> insertAtCursor("[[${titles[which]}]]") }
+                    .show()
+            }
         }
-        if (titles.isEmpty()) {
-            Toast.makeText(this, R.string.no_other_notes, Toast.LENGTH_SHORT).show()
-            return
-        }
-        AlertDialog.Builder(this)
-            .setTitle(R.string.pick_note)
-            .setItems(titles.toTypedArray()) { _, which -> insertAtCursor("[[${titles[which]}]]") }
-            .show()
     }
 
     // ---------- More menu ----------
@@ -1292,22 +1338,25 @@ class EditorActivity : Activity() {
             Toast.makeText(this, R.string.error_move, Toast.LENGTH_SHORT).show()
             return
         }
-        val books = try {
-            store.notebooks()
-        } catch (e: Exception) {
-            emptyList()
-        }
-        val labels = listOf(getString(R.string.top_level)) + books + getString(R.string.menu_new_notebook)
-        AlertDialog.Builder(this)
-            .setTitle(R.string.move)
-            .setItems(labels.toTypedArray()) { _, which ->
-                when (which) {
-                    0 -> moveTo("")
-                    labels.size - 1 -> askNewNotebook()
-                    else -> moveTo(books[which - 1])
-                }
+        inBackground({
+            try {
+                store.notebooks()
+            } catch (e: Exception) {
+                emptyList()
             }
-            .show()
+        }) { books ->
+            val labels = listOf(getString(R.string.top_level)) + books + getString(R.string.menu_new_notebook)
+            AlertDialog.Builder(this)
+                .setTitle(R.string.move)
+                .setItems(labels.toTypedArray()) { _, which ->
+                    when (which) {
+                        0 -> moveTo("")
+                        labels.size - 1 -> askNewNotebook()
+                        else -> moveTo(books[which - 1])
+                    }
+                }
+                .show()
+        }
     }
 
     private fun askNewNotebook() {
