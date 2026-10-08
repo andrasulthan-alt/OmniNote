@@ -197,4 +197,8 @@
     <string name="error_link">Tidak ada aplikasi untuk membuka tautan ini.</string>
     <string name="error_image">Gambar ini tidak bisa ditambahkan.</string>
     <string name="error_move">Catatan ini tidak bisa dipindahkan.</string>
+    <string name="crash_title">OmniNote tertutup mendadak</string>
+    <string name="crash_copy">Salin</string>
+    <string name="crash_copied">Disalin</string>
+    <string name="vault_exists">Vault sudah ada di folder catatan ini. Buka dengan sandinya.</string>
 </resources>
