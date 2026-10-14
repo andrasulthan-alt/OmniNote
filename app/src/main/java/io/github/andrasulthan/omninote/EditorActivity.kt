@@ -74,7 +74,7 @@ class EditorActivity : Activity() {
     private val redoStack = ArrayList<Snap>()
     private var restoring = false
     private var typingBurst = false
-    private val handler = Handler(Looper.getMainLooper())
+    private val uiHandler = Handler(Looper.getMainLooper())
     private val endBurst = Runnable { typingBurst = false }
 
     // Images shown inside the editor, loaded once per path.
@@ -82,6 +82,9 @@ class EditorActivity : Activity() {
     private val loadingImages = HashSet<String>()
     private val io = java.util.concurrent.Executors.newSingleThreadExecutor()
     private var loadingNote = false
+    private var resolving = false
+    /** A result from another screen (drawing, export) that waits until the note is on screen. */
+    private var pendingResult: (() -> Unit)? = null
     private var resumedOnce = false
     private var revealed = false
     private val restyle = Runnable {
@@ -96,6 +99,16 @@ class EditorActivity : Activity() {
         store = NoteStore(this)
         p = Ui.palette(this)
         noteId = savedInstanceState?.getString(KEY_ID) ?: intent.getStringExtra(EXTRA_ID)
+        editingDrawing = savedInstanceState?.getBoolean(KEY_EDITING_DRAWING) ?: false
+        // Other apps can start this screen; only open files that are really notes of this app.
+        val asked = noteId
+        if (asked != null && !store.owns(asked)) {
+            Toast.makeText(this, R.string.error_open, Toast.LENGTH_LONG).show()
+            noteId = null
+            deleted = true
+            finish()
+            return
+        }
         folder = intent.getStringExtra(EXTRA_FOLDER) ?: ""
 
         val scale = store.fontScale()
@@ -212,18 +225,18 @@ class EditorActivity : Activity() {
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
                 override fun afterTextChanged(s: Editable?) {
                     if (s != null) {
-                        handler.removeCallbacks(restyle)
+                        uiHandler.removeCallbacks(restyle)
                         if (s.length < STYLE_NOW_LIMIT) {
                             Markdown.styleEditable(s, p)
                             showInlineImages(s)
                         } else {
-                            handler.postDelayed(restyle, STYLE_DELAY_MS)
+                            uiHandler.postDelayed(restyle, STYLE_DELAY_MS)
                         }
                         updateCount()
                     }
                     if (!restoring) {
-                        handler.removeCallbacks(endBurst)
-                        handler.postDelayed(endBurst, BURST_MS)
+                        uiHandler.removeCallbacks(endBurst)
+                        uiHandler.postDelayed(endBurst, BURST_MS)
                     }
                     updateUndoButtons()
                 }
@@ -251,7 +264,7 @@ class EditorActivity : Activity() {
                 gravity = Gravity.CENTER
                 minWidth = Ui.dp(this@EditorActivity, 44f)
                 setPadding(small, small, small, small)
-                setOnClickListener { action() }
+                setOnClickListener { if (!loadingNote) action() }
             })
         }
         tool("H", R.string.tool_heading) { cycleHeading() }
@@ -356,7 +369,12 @@ class EditorActivity : Activity() {
                 null
             }
         }) { raw ->
-            if (raw != null && raw != known && noteId == id && !locked && buildText() == known && !Vault.isLocked(raw)) {
+            val normal = raw?.let {
+                val (m, c) = NoteMeta.parse(it)
+                val (t, b) = NoteStore.split(c)
+                NoteMeta.build(m, NoteStore.join(t, b))
+            }
+            if (raw != null && normal != known && noteId == id && !locked && buildText() == known && !Vault.isLocked(raw)) {
                 showPlain(raw)
                 if (reading) showRead()
             }
@@ -370,8 +388,8 @@ class EditorActivity : Activity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        handler.removeCallbacks(endBurst)
-        handler.removeCallbacks(restyle)
+        uiHandler.removeCallbacks(endBurst)
+        uiHandler.removeCallbacks(restyle)
         io.shutdown()
     }
 
@@ -380,13 +398,14 @@ class EditorActivity : Activity() {
         if (io.isShutdown) return
         io.execute {
             val result = work()
-            runOnUiThread { if (!isDestroyed) then(result) }
+            runOnUiThread { if (!isDestroyed && !isFinishing) then(result) }
         }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putString(KEY_ID, noteId)
+        outState.putBoolean(KEY_EDITING_DRAWING, editingDrawing)
     }
 
     // ---------- Images inside the editor ----------
@@ -441,16 +460,16 @@ class EditorActivity : Activity() {
         Snap(bodyView.text.toString(), bodyView.selectionStart.coerceAtLeast(0))
 
     private fun undo() {
-        if (undoStack.isEmpty()) return
-        handler.removeCallbacks(endBurst)
+        if (loadingNote || undoStack.isEmpty()) return
+        uiHandler.removeCallbacks(endBurst)
         typingBurst = false
         redoStack.add(currentSnap())
         restoreSnap(undoStack.removeAt(undoStack.size - 1))
     }
 
     private fun redo() {
-        if (redoStack.isEmpty()) return
-        handler.removeCallbacks(endBurst)
+        if (loadingNote || redoStack.isEmpty()) return
+        uiHandler.removeCallbacks(endBurst)
         typingBurst = false
         undoStack.add(currentSnap())
         restoreSnap(redoStack.removeAt(redoStack.size - 1))
@@ -508,6 +527,7 @@ class EditorActivity : Activity() {
         if (!Vault.isLocked(raw)) {
             showPlain(raw)
             setEditable(true)
+            runPendingResult()
             return
         }
         locked = true
@@ -517,6 +537,7 @@ class EditorActivity : Activity() {
                 showPlain(Vault.unseal(raw))
                 revealed = true
                 setEditable(true)
+                runPendingResult()
             } catch (e: Exception) {
                 Toast.makeText(this, R.string.error_open, Toast.LENGTH_LONG).show()
                 finish()
@@ -566,8 +587,13 @@ class EditorActivity : Activity() {
         if (loadingNote) return
         val title = titleView.text.toString()
         val body = bodyView.text.toString()
-        val plain = buildText()
+        var plain = buildText()
         if (plain == savedText) return
+        if (meta.remind in 1..System.currentTimeMillis()) {
+            // The reminder already rang; do not write it back into the note.
+            meta = meta.copy(remind = 0L)
+            plain = buildText()
+        }
         if (noteId == null && title.isBlank() && body.isBlank()) return
         if (noteId == null && title.isBlank() && body.trim() == "- [ ]") return
         val isNew = noteId == null
@@ -844,6 +870,9 @@ class EditorActivity : Activity() {
     /** Finds the note this sync conflict belongs to, off the main thread. */
     private fun withOriginal(then: (Note) -> Unit) {
         val id = noteId ?: return
+        // One conflict action at a time: a second tap while the first runs is ignored.
+        if (resolving) return
+        resolving = true
         inBackground({
             try {
                 store.findOriginal(id)
@@ -852,9 +881,11 @@ class EditorActivity : Activity() {
             }
         }) { found ->
             if (found == null) {
+                resolving = false
                 Toast.makeText(this, R.string.conflict_no_original, Toast.LENGTH_LONG).show()
             } else {
                 then(found)
+                if (!isFinishing) resolving = false
             }
         }
     }
@@ -994,6 +1025,8 @@ class EditorActivity : Activity() {
         val id = noteId
         if (id == null) {
             // An empty note is not saved, so it cannot ring yet.
+            meta = meta.copy(remind = 0L)
+            updateMetaLine()
             Toast.makeText(this, R.string.error_save, Toast.LENGTH_SHORT).show()
             return
         }
@@ -1182,23 +1215,41 @@ class EditorActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (resultCode != RESULT_OK) return
-        if (requestCode == REQ_DRAW) {
-            val drawing = data?.getStringExtra(DrawActivity.EXTRA_PATH) ?: return
-            imageCache.remove(drawing)
-            if (editingDrawing) {
-                refreshInlineImages()
-                if (reading) showRead()
-            } else {
-                insertBlock("![]($drawing)")
+        val act: () -> Unit = when (requestCode) {
+            REQ_DRAW -> {
+                val drawing = data?.getStringExtra(DrawActivity.EXTRA_PATH) ?: return
+                {
+                    imageCache.remove(drawing)
+                    if (editingDrawing) {
+                        refreshInlineImages()
+                        if (reading) showRead()
+                    } else {
+                        insertBlock("![]($drawing)")
+                    }
+                }
             }
-            return
+            else -> {
+                val uri = data?.data ?: return
+                {
+                    when (requestCode) {
+                        REQ_IMAGE -> addImage(uri)
+                        REQ_EXPORT_MD -> writeExport(uri, buildText())
+                        REQ_EXPORT_HTML -> writeExport(uri, HtmlExport.page(store, buildText()))
+                    }
+                }
+            }
         }
-        val uri = data?.data ?: return
-        when (requestCode) {
-            REQ_IMAGE -> addImage(uri)
-            REQ_EXPORT_MD -> writeExport(uri, buildText())
-            REQ_EXPORT_HTML -> writeExport(uri, HtmlExport.page(store, buildText()))
-        }
+        // The screen may have been rebuilt (rotation) or the vault closed meanwhile: wait for the note.
+        if (noteReady()) act() else pendingResult = act
+    }
+
+    private fun noteReady(): Boolean = !loadingNote && (!locked || (revealed && Vault.isOpen()))
+
+    private fun runPendingResult() {
+        val act = pendingResult ?: return
+        if (!noteReady()) return
+        pendingResult = null
+        act()
     }
 
     private fun addImage(uri: Uri) {
@@ -1245,6 +1296,7 @@ class EditorActivity : Activity() {
     // ---------- More menu ----------
 
     private fun showMoreMenu(anchor: View) {
+        if (loadingNote) return
         val id = noteId
         val popup = PopupMenu(this, anchor)
         val menu = popup.menu
@@ -1576,6 +1628,7 @@ class EditorActivity : Activity() {
         const val EXTRA_TITLE = "note_title"
         const val EXTRA_FOLDER = "note_folder"
         private const val KEY_ID = "note_id"
+        private const val KEY_EDITING_DRAWING = "editing_drawing"
         private const val ID_TITLE = 101
         private const val ID_BODY = 102
         private const val REQ_IMAGE = 7

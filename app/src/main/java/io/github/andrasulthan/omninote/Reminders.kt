@@ -25,6 +25,7 @@ object Reminders {
     const val EXTRA_ID = "reminder_note_id"
     const val EXTRA_TITLE = "reminder_note_title"
     const val ACTION_UNPIN = "io.github.andrasulthan.omninote.UNPIN"
+    private const val DAY = 24 * 60 * 60 * 1000L
 
     private fun manager(ctx: Context): NotificationManager =
         ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -186,7 +187,7 @@ object Reminders {
             // Future reminders are set again; ones missed while the phone was off ring right away.
             if (note.meta.remind > now) {
                 schedule(ctx, note.id, title, note.meta.remind)
-            } else if (note.meta.remind > 0 && !note.meta.vault) {
+            } else if (note.meta.remind > now - DAY && !note.meta.vault) {
                 schedule(ctx, note.id, title, now + 5_000)
             }
             if (note.id in pinned) {

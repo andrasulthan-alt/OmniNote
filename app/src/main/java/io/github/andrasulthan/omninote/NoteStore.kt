@@ -405,6 +405,27 @@ class NoteStore(private val ctx: Context) {
         for (note in listTrash()) deleteForever(note.id)
     }
 
+    /** True when the id points to a note inside the notes folder (ids from other apps are not trusted). */
+    fun owns(id: String): Boolean = try {
+        val tree = treeUri
+        if (id.startsWith(CONTENT)) {
+            if (tree == null) {
+                false
+            } else {
+                // Every note address carries the id of the folder it was opened through; the folder
+                // app itself refuses addresses outside the folder the user picked.
+                val uri = Uri.parse(id)
+                uri.authority == tree.authority &&
+                    DocumentsContract.isTreeUri(uri) &&
+                    DocumentsContract.getTreeDocumentId(uri) == DocumentsContract.getTreeDocumentId(tree)
+            }
+        } else {
+            File(id).canonicalPath.startsWith(localDir.canonicalPath + File.separator)
+        }
+    } catch (e: Exception) {
+        false
+    }
+
     /** Notebook path of a note ("" for the top level). */
     fun folderOf(id: String): String {
         val tree = treeUri
@@ -565,7 +586,9 @@ class NoteStore(private val ctx: Context) {
     /** Reads a note only when it changed since the last listing; one broken file never hides the others. */
     private fun load(id: String, name: String, modified: Long, folder: String, out: MutableList<Note>, text: () -> String) {
         val cached = synchronized(cache) { cache[id] }
-        if (cached != null && modified > 0 && cached.first == modified) {
+        if (cached != null && modified > 0 && cached.first == modified &&
+            cached.second.folder == folder && cached.second.fileName == name
+        ) {
             out.add(cached.second)
             return
         }
@@ -605,7 +628,8 @@ class NoteStore(private val ctx: Context) {
         private const val MAX_DEPTH = 8
         private val cache = HashMap<String, Pair<Long, Note>>()
 
-        fun isMd(name: String): Boolean = name.lowercase().endsWith(MD) && !name.startsWith(".")
+        /** Markdown notes; macOS "._" helper files are skipped (temporary ".tmp" files never end in .md). */
+        fun isMd(name: String): Boolean = name.lowercase().endsWith(MD) && !name.startsWith("._")
 
         private val CONFLICT = Regex("\\.sync-conflict-\\d{8}-\\d{6}-[A-Z0-9]{7}")
 
@@ -648,6 +672,7 @@ class NoteStore(private val ctx: Context) {
             val clean = title
                 .replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), " ")
                 .trim()
+                .trimStart('.', ' ')
                 .take(60)
                 .trim()
             val base = clean.ifBlank {

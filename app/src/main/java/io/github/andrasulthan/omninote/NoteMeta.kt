@@ -77,9 +77,16 @@ data class NoteMeta(
                     "archived" -> archived = isTrue(value)
                     "color" -> color = unquote(value).lowercase().ifBlank { null }
                     "tags" -> if (value.isEmpty()) inTags = true else tags.addAll(splitList(value))
-                    "created" -> created = parseTime(unquote(value))
+                    "created" -> {
+                        created = parseTime(unquote(value))
+                        // Keep a date this app cannot read exactly as it was, instead of dropping it.
+                        if (created == 0L && value.isNotBlank()) extra.add(line)
+                    }
                     "trashed_from" -> trashedFrom = unquote(value).ifBlank { null }
-                    "remind" -> remind = parseTime(unquote(value))
+                    "remind" -> {
+                        remind = parseTime(unquote(value))
+                        if (remind == 0L && value.isNotBlank()) extra.add(line)
+                    }
                     "vault" -> vault = value.equals("true", ignoreCase = true)
                     else -> if (line.isNotBlank()) extra.add(line)
                 }
@@ -137,14 +144,20 @@ data class NoteMeta(
             if (v.isEmpty()) return 0L
             v.toLongOrNull()?.let { n -> return if (n in 1..99_999_999_999L) n * 1000 else n }
             val position = java.text.ParsePosition(0)
-            for (pattern in listOf("yyyy-MM-dd'T'HH:mm:ss'Z'", "yyyy-MM-dd'T'HH:mm:ssXXX")) {
+            for (pattern in listOf(
+                "yyyy-MM-dd'T'HH:mm:ss'Z'", "yyyy-MM-dd'T'HH:mm:ssXXX",
+                "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", "yyyy-MM-dd'T'HH:mm:ss.SSSXXX", "yyyy-MM-dd'T'HH:mmXXX"
+            )) {
                 position.index = 0
                 position.errorIndex = -1
                 val date = try { formatter(pattern).parse(v, position) } catch (e: Exception) { null }
                 if (date != null && position.index == v.length) return date.time
             }
             // Times without a zone are local, like in Obsidian and most editors.
-            for (pattern in listOf("yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd'T'HH:mm", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm", "yyyy-MM-dd")) {
+            for (pattern in listOf(
+                "yyyy-MM-dd'T'HH:mm:ss.SSS", "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd'T'HH:mm",
+                "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm", "yyyy-MM-dd"
+            )) {
                 position.index = 0
                 position.errorIndex = -1
                 val local = SimpleDateFormat(pattern, Locale.US).apply { isLenient = false }

@@ -31,14 +31,11 @@ object Widgets {
     }
 
     /**
-     * Opens a screen from a widget. CLEAR_TOP returns to that screen if it is already open
-     * (an open note is saved first) instead of piling up copies; the notes list keeps its place.
+     * Opens a screen from a widget. Screens that are already open are left alone, so an unsaved
+     * drawing is never closed by tapping a widget.
      */
     private fun activity(ctx: Context, requestCode: Int, intent: Intent): PendingIntent {
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        if (intent.component?.className == MainActivity::class.java.name) {
-            intent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        }
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         return PendingIntent.getActivity(
             ctx, requestCode, intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT

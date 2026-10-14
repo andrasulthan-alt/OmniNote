@@ -121,7 +121,12 @@ class TasksActivity : Activity() {
             try {
                 for (note in store.list()) {
                     if (note.meta.archived) continue
-                    val lines = store.read(note.id).replace("\r\n", "\n").split("\n")
+                    // A note removed meanwhile is skipped; the others still show.
+                    val lines = try {
+                        store.read(note.id)
+                    } catch (e: Exception) {
+                        continue
+                    }.replace("\r\n", "\n").split("\n")
                     lines.forEachIndexed { index, line ->
                         val m = TASK.find(line)
                         if (m != null && m.groupValues[4].isNotBlank()) {
