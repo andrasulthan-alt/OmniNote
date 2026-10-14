@@ -28,6 +28,7 @@ object AppLock {
 
     private const val KEY_MODE = "app_lock_mode"
     private const val VAULT_TIMEOUT = 5 * 60_000L
+    private const val CONFIG_CHANGE_MS = 5_000L
 
     @Volatile
     var locked = false
@@ -35,6 +36,7 @@ object AppLock {
     private var started = 0
     private var leftAt = 0L
     private var changingConfig = false
+    private var changingConfigAt = 0L
 
     /** 0 off, 1 right away (15 s grace), 2 after 1 minute, 3 after 5 minutes. */
     fun mode(ctx: Context): Int =
@@ -58,7 +60,9 @@ object AppLock {
     }
 
     fun onStarted(activity: Activity) {
-        if (started == 0 && !changingConfig) onForeground(activity)
+        // A rebuilt screen (rotation) comes back within moments; anything later is a real return.
+        val rebuilt = changingConfig && SystemClock.elapsedRealtime() - changingConfigAt < CONFIG_CHANGE_MS
+        if (started == 0 && !rebuilt) onForeground(activity)
         changingConfig = false
         started++
     }
@@ -68,6 +72,7 @@ object AppLock {
         if (activity.isChangingConfigurations) {
             // Rotation, dark mode and similar: the screen comes straight back, so do not count it as leaving.
             changingConfig = true
+            changingConfigAt = SystemClock.elapsedRealtime()
             return
         }
         if (started == 0) leftAt = SystemClock.elapsedRealtime()

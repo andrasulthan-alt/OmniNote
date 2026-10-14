@@ -17,9 +17,23 @@ object History {
     private fun dir(ctx: Context, key: String): File =
         File(File(ctx.filesDir, "history"), key).apply { mkdirs() }
 
-    /** A key that stays the same when a note is renamed or moved, when possible. */
+    /**
+     * A key that stays the same when a note is renamed or moved, when possible.
+     * A creation date without a time ("created: 2026-10-01", common in imported notes) is shared by
+     * many notes, so those notes are told apart by their file instead.
+     */
     fun keyFor(id: String, meta: NoteMeta): String =
-        if (meta.created > 0) "c" + meta.created else "i" + Integer.toHexString(id.hashCode())
+        if (meta.created > 0 && !isDateOnly(meta.created)) {
+            "c" + meta.created
+        } else {
+            "i" + Integer.toHexString(id.hashCode())
+        }
+
+    private fun isDateOnly(millis: Long): Boolean {
+        val c = java.util.Calendar.getInstance().apply { timeInMillis = millis }
+        return c.get(java.util.Calendar.HOUR_OF_DAY) == 0 && c.get(java.util.Calendar.MINUTE) == 0 &&
+            c.get(java.util.Calendar.SECOND) == 0 && c.get(java.util.Calendar.MILLISECOND) == 0
+    }
 
     /** Keeps the previous text of a note before it is overwritten (at most every 2 minutes). */
     fun record(ctx: Context, key: String, previous: String, force: Boolean = false) {
