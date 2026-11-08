@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Widget catatan -->
+    <string name="fix_widget_choose">Ketuk untuk memilih catatan bagi widget ini.</string>
+    <string name="fix_widget_missing">Catatan ini sudah dipindah atau dihapus. Ketuk untuk memilih catatan lain.</string>
+
+    <!-- Layar utama saat folder catatan tidak bisa dibaca -->
+    <string name="fix_folder_retry">Folder mungkin sudah dipindah, atau izin aksesnya hilang.\nKetuk di sini untuk memilih folder catatan lagi.</string>
+</resources>
