@@ -65,6 +65,9 @@ class MainActivity : Activity() {
     private val loading = java.util.concurrent.atomic.AtomicBoolean(false)
     @Volatile private var reloadAgain = false
     private var folderErrorShown = false
+    /** The last listing failed (folder moved, removed, or its access lost after a restart). */
+    private var folderFailed = false
+    private var loadedOnce = false
     private val refresher = object : Runnable {
         override fun run() {
             if (selected.isEmpty()) reload()
@@ -211,12 +214,13 @@ class MainActivity : Activity() {
             clipToPadding = false
             setPadding(0, 0, 0, Ui.dp(context, 96f))
             adapter = notesAdapter
+            // A tap that lands while the list is being replaced can point past its end.
             onItemClickListener = AdapterView.OnItemClickListener { _, _, position, _ ->
-                val note = notesAdapter.getItem(position)
+                val note = notesAdapter.items.getOrNull(position) ?: return@OnItemClickListener
                 if (selected.isNotEmpty()) toggleSelected(note) else open(note.id)
             }
             onItemLongClickListener = AdapterView.OnItemLongClickListener { _, _, position, _ ->
-                toggleSelected(notesAdapter.getItem(position))
+                notesAdapter.items.getOrNull(position)?.let { toggleSelected(it) }
                 true
             }
         }
@@ -256,11 +260,23 @@ class MainActivity : Activity() {
         )
         Ui.applyInsets(frame)
         setContentView(frame)
+
+        // Rotation and dark mode rebuild the screen: keep the search and the selection.
+        if (savedInstanceState != null) {
+            if (savedInstanceState.getBoolean(KEY_SEARCHING)) {
+                searchArea.visibility = View.VISIBLE
+                searchBox.setText(savedInstanceState.getString(KEY_QUERY) ?: "")
+                updateRecent()
+            }
+            savedInstanceState.getStringArrayList(KEY_SELECTED)?.let { selected.addAll(it) }
+        }
     }
 
     override fun onResume() {
         super.onResume()
         reload()
+        // Notes may have changed through sync while the app was away; bring the note widgets up to date.
+        Widgets.refreshNotes(this)
         Transfer.maybeAutoBackup(this)
         handler.removeCallbacks(refresher)
         handler.postDelayed(refresher, REFRESH_MS)
@@ -280,12 +296,17 @@ class MainActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putString(KEY_FILTER, filter)
+        outState.putBoolean(KEY_SEARCHING, searchArea.visibility == View.VISIBLE)
+        outState.putString(KEY_QUERY, query)
+        outState.putStringArrayList(KEY_SELECTED, ArrayList(selected))
     }
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (selected.isNotEmpty()) {
             exitSelection()
+        } else if (searchArea.visibility == View.VISIBLE) {
+            toggleSearch()
         } else {
             @Suppress("DEPRECATION")
             super.onBackPressed()
@@ -331,6 +352,8 @@ class MainActivity : Activity() {
                 if (!isDestroyed) {
                     if (failed && !folderErrorShown) Toast.makeText(this, R.string.error_folder, Toast.LENGTH_LONG).show()
                     folderErrorShown = failed
+                    folderFailed = failed
+                    loadedOnce = true
                     allNotes = notes
                     trashNotes = trash
                     notebooks = books
@@ -384,8 +407,17 @@ class MainActivity : Activity() {
         updateSelectionBar()
         notesAdapter.notifyDataSetChanged()
         val nothingAtAll = allNotes.isEmpty() && trashNotes.isEmpty()
-        emptyView.text = getString(if (nothingAtAll) R.string.empty else R.string.empty_filtered)
-        emptyView.visibility = if (notesAdapter.items.isEmpty()) View.VISIBLE else View.GONE
+        // An unreadable folder looks empty; say so instead of "No notes yet", and offer to pick it again.
+        val broken = folderFailed && nothingAtAll && store.treeUri != null
+        emptyView.text = when {
+            broken -> getString(R.string.error_folder) + "\n" + getString(R.string.fix_folder_retry)
+            nothingAtAll -> getString(R.string.empty)
+            else -> getString(R.string.empty_filtered)
+        }
+        if (broken) emptyView.setOnClickListener { chooseFolder() } else emptyView.setOnClickListener(null)
+        emptyView.isClickable = broken
+        // Before the first listing nothing is known yet; do not flash "No notes yet".
+        emptyView.visibility = if (loadedOnce && notesAdapter.items.isEmpty()) View.VISIBLE else View.GONE
     }
 
     private fun buildChips() {
@@ -834,6 +866,8 @@ class MainActivity : Activity() {
         filter = FILTER_ALL
         Vault.close()
         reload()
+        // Note widgets of the old location now offer to pick a note of the new one.
+        Widgets.refreshNotes(this)
         io.execute {
             val oldRoot = NotesRoot(this, oldTree)
             val count = try {
@@ -843,7 +877,7 @@ class MainActivity : Activity() {
             }
             if (count == 0) return@execute
             runOnUiThread {
-                if (isDestroyed) return@runOnUiThread
+                if (isDestroyed || isFinishing) return@runOnUiThread
                 AlertDialog.Builder(this)
                     .setTitle(R.string.copy_notes_title)
                     .setMessage(getString(R.string.copy_notes_msg, count))
@@ -864,6 +898,7 @@ class MainActivity : Activity() {
                                 }
                                 Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                                 reload()
+                                Widgets.refreshNotes(this)
                             }
                         }
                     }
@@ -1310,6 +1345,9 @@ class MainActivity : Activity() {
         private const val REQ_BACKUP_FOLDER = 45
         private const val REFRESH_MS = 15_000L
         private const val KEY_FILTER = "filter"
+        private const val KEY_SEARCHING = "searching"
+        private const val KEY_QUERY = "query"
+        private const val KEY_SELECTED = "selected"
         private const val KEY_RECENT = "recent_searches"
         private const val FILTER_ALL = "all"
         private const val FILTER_ARCHIVE = "archive"

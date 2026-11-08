@@ -19,9 +19,11 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.Editable
+import android.text.InputFilter
 import android.text.InputType
 import android.text.SpannableStringBuilder
 import android.text.Spanned
+import android.text.TextUtils
 import android.text.TextWatcher
 import android.text.format.DateFormat
 import android.text.format.DateUtils
@@ -87,6 +89,13 @@ class EditorActivity : Activity() {
     private var pendingResult: (() -> Unit)? = null
     private var resumedOnce = false
     private var revealed = false
+    /** True once the cursor was placed in the note text (by a tap or by this screen). */
+    private var bodyEverFocused = false
+    /** Position of a newline just typed, so a list can be continued on the next line. */
+    private var listNewline = -1
+    /** Read mode and cursor of the previous screen (rotation), applied once the note is shown. */
+    private var restoreReading = false
+    private var restoreCursor = -1
     private val restyle = Runnable {
         if (::bodyView.isInitialized) {
             Markdown.styleEditable(bodyView.text, p)
@@ -100,6 +109,8 @@ class EditorActivity : Activity() {
         p = Ui.palette(this)
         noteId = savedInstanceState?.getString(KEY_ID) ?: intent.getStringExtra(EXTRA_ID)
         editingDrawing = savedInstanceState?.getBoolean(KEY_EDITING_DRAWING) ?: false
+        restoreReading = savedInstanceState?.getBoolean(KEY_READING) ?: false
+        restoreCursor = savedInstanceState?.getInt(KEY_CURSOR, -1) ?: -1
         // Other apps can start this screen; only open files that are really notes of this app.
         val asked = noteId
         if (asked != null && !store.owns(asked)) {
@@ -109,7 +120,9 @@ class EditorActivity : Activity() {
             finish()
             return
         }
-        folder = intent.getStringExtra(EXTRA_FOLDER) ?: ""
+        // New notes never go into the trash or a hidden settings folder (links from a trashed note, other apps).
+        folder = NoteStore.cleanPath(intent.getStringExtra(EXTRA_FOLDER) ?: "")
+            .takeIf { path -> path.split("/").none { it.startsWith(".") } } ?: ""
 
         val scale = store.fontScale()
         val pad = Ui.dp(this, 20f)
@@ -176,6 +189,15 @@ class EditorActivity : Activity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
             imeOptions = EditorInfo.IME_ACTION_NEXT or EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
             setSingleLine(true)
+            // A pasted or shared title with line breaks would split into title and text when saved.
+            filters = arrayOf<InputFilter>(InputFilter { source, start, end, _, _, _ ->
+                val piece = source.subSequence(start, end).toString()
+                if (piece.indexOf('\n') < 0 && piece.indexOf('\r') < 0) {
+                    null
+                } else {
+                    piece.replace("\r\n", " ").replace('\n', ' ').replace('\r', ' ')
+                }
+            })
             isSaveEnabled = false
         }
 
@@ -215,6 +237,7 @@ class EditorActivity : Activity() {
                 InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
             imeOptions = EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
             setLineSpacing(0f, 1.25f)
+            setOnFocusChangeListener { _, hasFocus -> if (hasFocus) bodyEverFocused = true }
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {
                     if (!restoring && !typingBurst) {
@@ -222,8 +245,18 @@ class EditorActivity : Activity() {
                         typingBurst = true
                     }
                 }
-                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    // One new line typed (Enter, or a keyboard committing "word" plus Enter).
+                    val last = start + count - 1
+                    listNewline = if (s != null && !restoring && !loadingNote && count == before + 1 &&
+                        last in 0 until s.length && s[last] == '\n'
+                    ) last else -1
+                }
                 override fun afterTextChanged(s: Editable?) {
+                    val newline = listNewline
+                    listNewline = -1
+                    // The list change runs this listener again, which styles the text.
+                    if (s != null && newline >= 0 && continueList(s, newline)) return
                     if (s != null) {
                         uiHandler.removeCallbacks(restyle)
                         if (s.length < STYLE_NOW_LIMIT) {
@@ -264,7 +297,15 @@ class EditorActivity : Activity() {
                 gravity = Gravity.CENTER
                 minWidth = Ui.dp(this@EditorActivity, 44f)
                 setPadding(small, small, small, small)
-                setOnClickListener { if (!loadingNote) action() }
+                setOnClickListener {
+                    if (!loadingNote && bodyView.isEnabled) {
+                        // Work on the note text even when the title has the cursor, as its own undo step.
+                        focusBody()
+                        endTypingBurst()
+                        action()
+                        endTypingBurst()
+                    }
+                }
             })
         }
         tool("H", R.string.tool_heading) { cycleHeading() }
@@ -315,7 +356,10 @@ class EditorActivity : Activity() {
             when {
                 intent.action == Intent.ACTION_SEND -> {
                     titleView.setText(intent.getStringExtra(Intent.EXTRA_SUBJECT) ?: "")
-                    bodyView.setText(intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString() ?: "")
+                    val shared = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+                    bodyView.setText(shared ?: "")
+                    // File apps share a text or Markdown file instead of text.
+                    if (shared == null) readSharedFile()
                 }
                 intent.getStringExtra(EXTRA_TITLE) != null -> {
                     titleView.setText(intent.getStringExtra(EXTRA_TITLE))
@@ -332,8 +376,58 @@ class EditorActivity : Activity() {
             clearUndo()
             updateCount()
             updateMetaLine()
+            applyRestoredState()
         }
         updateUndoButtons()
+    }
+
+    /** Reads a shared text file into this new note, off the main thread. */
+    private fun readSharedFile() {
+        @Suppress("DEPRECATION")
+        val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM) ?: return
+        inBackground({
+            try {
+                contentResolver.openInputStream(uri)?.use { input ->
+                    val out = java.io.ByteArrayOutputStream()
+                    val buffer = ByteArray(8192)
+                    while (true) {
+                        val n = input.read(buffer)
+                        if (n < 0) break
+                        out.write(buffer, 0, n)
+                        if (out.size() > MAX_SHARED_BYTES) return@use null
+                    }
+                    out.toString("UTF-8")
+                }
+            } catch (e: Exception) {
+                null
+            }
+        }) { text ->
+            if (text == null) {
+                Toast.makeText(this, R.string.error_open, Toast.LENGTH_LONG).show()
+                return@inBackground
+            }
+            // Only fill a note nothing was typed into yet.
+            if (noteId != null || bodyView.text.isNotEmpty()) return@inBackground
+            val (m, content) = NoteMeta.parse(text)
+            restoring = true
+            if (m.vault) {
+                bodyView.setText(text)
+            } else {
+                val (t, b) = NoteStore.split(content)
+                meta = m.copy(
+                    created = if (m.created > 0) m.created else meta.created,
+                    color = m.color ?: meta.color,
+                    trashedFrom = null,
+                    remind = 0L
+                )
+                if (titleView.text.isBlank()) titleView.setText(t)
+                bodyView.setText(b)
+            }
+            restoring = false
+            clearUndo()
+            updateCount()
+            updateMetaLine()
+        }
     }
 
     override fun onResume() {
@@ -406,6 +500,28 @@ class EditorActivity : Activity() {
         super.onSaveInstanceState(outState)
         outState.putString(KEY_ID, noteId)
         outState.putBoolean(KEY_EDITING_DRAWING, editingDrawing)
+        if (::bodyView.isInitialized && !loadingNote && (!locked || revealed)) {
+            outState.putBoolean(KEY_READING, reading)
+            if (bodyEverFocused) outState.putInt(KEY_CURSOR, bodyView.selectionStart)
+        } else {
+            // The note is not on screen yet: keep what the previous screen asked for.
+            outState.putBoolean(KEY_READING, restoreReading)
+            outState.putInt(KEY_CURSOR, restoreCursor)
+        }
+    }
+
+    /** Puts back read mode and the cursor after the screen was rebuilt (rotation, dark mode). */
+    private fun applyRestoredState() {
+        val cursor = restoreCursor
+        restoreCursor = -1
+        if (cursor >= 0) {
+            bodyView.setSelection(cursor.coerceIn(0, bodyView.text.length))
+            bodyEverFocused = true
+        }
+        if (restoreReading) {
+            restoreReading = false
+            showRead()
+        }
     }
 
     // ---------- Images inside the editor ----------
@@ -527,6 +643,7 @@ class EditorActivity : Activity() {
         if (!Vault.isLocked(raw)) {
             showPlain(raw)
             setEditable(true)
+            applyRestoredState()
             runPendingResult()
             return
         }
@@ -537,6 +654,7 @@ class EditorActivity : Activity() {
                 showPlain(Vault.unseal(raw))
                 revealed = true
                 setEditable(true)
+                applyRestoredState()
                 runPendingResult()
             } catch (e: Exception) {
                 Toast.makeText(this, R.string.error_open, Toast.LENGTH_LONG).show()
@@ -655,7 +773,8 @@ class EditorActivity : Activity() {
 
     private fun updateCount() {
         val body = bodyView.text.toString()
-        val words = WORD.findAll(body).count()
+        // A word has at least one letter or digit, so list marks like "-" and "[ ]" are not counted.
+        val words = WORD.findAll(body).count { m -> m.value.any { it.isLetterOrDigit() } }
         countView.text = getString(R.string.word_count, words, body.length)
     }
 
@@ -742,7 +861,23 @@ class EditorActivity : Activity() {
                     1 -> createExportFile("text/html", ".html", REQ_EXPORT_HTML)
                     else -> {
                         val title = titleView.text.toString().ifBlank { getString(R.string.app_name) }
-                        HtmlExport.print(this, HtmlExport.page(store, buildText()), "OmniNote - $title")
+                        val text = buildText()
+                        // Embedding the pictures can take a while; never freeze the screen for it.
+                        inBackground({
+                            try {
+                                HtmlExport.page(store, text)
+                            } catch (e: Exception) {
+                                null
+                            } catch (e: OutOfMemoryError) {
+                                null
+                            }
+                        }) { page ->
+                            if (page == null) {
+                                Toast.makeText(this, R.string.export_failed, Toast.LENGTH_SHORT).show()
+                            } else {
+                                HtmlExport.print(this, page, "OmniNote - $title")
+                            }
+                        }
                     }
                 }
             }
@@ -763,19 +898,31 @@ class EditorActivity : Activity() {
         }
     }
 
-    private fun writeExport(uri: Uri, text: String) {
-        val ok = try {
-            val out = contentResolver.openOutputStream(uri, "wt")
-            if (out != null) {
-                out.use { it.write(text.toByteArray(Charsets.UTF_8)) }
-                true
-            } else {
+    /** Writes an export off the main thread; [make] builds the file text there too. */
+    private fun writeExport(uri: Uri, make: () -> String) {
+        inBackground({
+            try {
+                val bytes = make().toByteArray(Charsets.UTF_8)
+                // Some folder apps (cloud drives) do not know the "truncate" mode; the new file is empty anyway.
+                val out = try {
+                    contentResolver.openOutputStream(uri, "wt")
+                } catch (e: Exception) {
+                    contentResolver.openOutputStream(uri, "w")
+                }
+                if (out != null) {
+                    out.use { it.write(bytes) }
+                    true
+                } else {
+                    false
+                }
+            } catch (e: Exception) {
+                false
+            } catch (e: OutOfMemoryError) {
                 false
             }
-        } catch (e: Exception) {
-            false
+        }) { ok ->
+            Toast.makeText(this, if (ok) R.string.export_saved else R.string.export_failed, Toast.LENGTH_SHORT).show()
         }
-        Toast.makeText(this, if (ok) R.string.export_saved else R.string.export_failed, Toast.LENGTH_SHORT).show()
     }
 
     // ---------- Version history ----------
@@ -833,6 +980,7 @@ class EditorActivity : Activity() {
                 showPlain(plain)
                 savedText = ""
                 save()
+                if (reading) showRead()
                 Toast.makeText(this, R.string.history_restored, Toast.LENGTH_SHORT).show()
             }
             .show()
@@ -965,6 +1113,10 @@ class EditorActivity : Activity() {
             val renamed = store.rename(id, Vault.lockedTitle())
             followNewId(id, renamed)
             noteId = renamed
+            // A waiting reminder must not show the title of a locked note when it rings.
+            if (renamed == id && meta.remind > System.currentTimeMillis()) {
+                Reminders.schedule(this, id, reminderTitle(), meta.remind)
+            }
             Reminders.unpinNotification(this, renamed)
             // Older versions were kept as plain text; remove them so nothing readable stays behind.
             History.forget(this, plainKey)
@@ -987,6 +1139,9 @@ class EditorActivity : Activity() {
             }
             followNewId(id, renamed)
             noteId = renamed
+            if (renamed == id && meta.remind > System.currentTimeMillis()) {
+                Reminders.schedule(this, id, reminderTitle(), meta.remind)
+            }
             Widgets.refreshNotes(this)
             updateMetaLine()
         }
@@ -1089,14 +1244,25 @@ class EditorActivity : Activity() {
                 i++
             }
         }
-        typingBurst = false
-        bodyView.setText(out.joinToString("\n"))
+        replaceBody(out.joinToString("\n"))
+    }
+
+    /** Replaces the whole note text as one undo step, keeping the cursor where it was. */
+    private fun replaceBody(text: String) {
+        if (text == bodyView.text.toString()) return
+        val cursor = bodyView.selectionStart
+        endTypingBurst()
+        bodyView.setText(text)
+        endTypingBurst()
+        if (cursor >= 0) bodyView.setSelection(cursor.coerceAtMost(bodyView.text.length))
         if (reading) showRead()
     }
 
     // ---------- Read / edit modes ----------
 
     private fun showRead() {
+        // Also called to refresh the read view; only hide the keyboard when switching to it.
+        val switching = !reading
         reading = true
         readView.text = Markdown.render(
             bodyView.text.toString(),
@@ -1112,14 +1278,15 @@ class EditorActivity : Activity() {
         toolArea.visibility = View.GONE
         readScroll.visibility = View.VISIBLE
         modeButton.text = getString(R.string.mode_edit).uppercase()
-        hideKeyboard()
+        if (switching) hideKeyboard()
     }
 
     private fun showEdit() {
         reading = false
         readScroll.visibility = View.GONE
         bodyView.visibility = View.VISIBLE
-        toolArea.visibility = View.VISIBLE
+        // No toolbar while the note is loading or still locked.
+        toolArea.visibility = if (bodyView.isEnabled) View.VISIBLE else View.GONE
         modeButton.text = getString(R.string.mode_read).uppercase()
     }
 
@@ -1135,13 +1302,13 @@ class EditorActivity : Activity() {
         val m = TASK_BOX.find(line) ?: return
         val flipped = if (m.groupValues[2] == " ") "x" else " "
         lines[lineIndex] = m.groupValues[1] + flipped + m.groupValues[3] + line.substring(m.value.length)
-        typingBurst = false
-        bodyView.setText(lines.joinToString("\n"))
-        if (reading) showRead()
+        replaceBody(lines.joinToString("\n"))
     }
 
     private fun openLink(url: String) {
-        val trimmed = url.trim()
+        // A bare web address at the end of a sentence takes the full stop or comma with it.
+        val trimmed = url.trim().trimEnd('.', ',', ';', ':', '!', '?', '\'', '"')
+        if (trimmed.isEmpty()) return
         val full = if (SCHEME.containsMatchIn(trimmed)) trimmed else "https://$trimmed"
         if (full.startsWith("file:", ignoreCase = true) || full.startsWith("content:", ignoreCase = true)) {
             Toast.makeText(this, R.string.error_link, Toast.LENGTH_SHORT).show()
@@ -1155,7 +1322,10 @@ class EditorActivity : Activity() {
     }
 
     /** Opens the note with this title, or starts a new one when it does not exist yet. */
-    private fun openNoteByTitle(title: String) {
+    private fun openNoteByTitle(link: String) {
+        // Obsidian-style [[Title|shown text]] and [[Title#Heading]] point to the note "Title".
+        val title = link.substringBefore('|').substringBefore('#').trim()
+        if (title.isEmpty()) return
         save()
         inBackground({
             try {
@@ -1164,6 +1334,8 @@ class EditorActivity : Activity() {
                 null
             }
         }) { found ->
+            // A link to this same note: a second editor on one file would overwrite the other's changes.
+            if (found != null && found.id == noteId) return@inBackground
             val next = Intent(this, EditorActivity::class.java)
             if (found != null) {
                 next.putExtra(EXTRA_ID, found.id)
@@ -1233,8 +1405,14 @@ class EditorActivity : Activity() {
                 {
                     when (requestCode) {
                         REQ_IMAGE -> addImage(uri)
-                        REQ_EXPORT_MD -> writeExport(uri, buildText())
-                        REQ_EXPORT_HTML -> writeExport(uri, HtmlExport.page(store, buildText()))
+                        REQ_EXPORT_MD -> {
+                            val text = buildText()
+                            writeExport(uri) { text }
+                        }
+                        REQ_EXPORT_HTML -> {
+                            val text = buildText()
+                            writeExport(uri) { HtmlExport.page(store, text) }
+                        }
                     }
                 }
             }
@@ -1517,25 +1695,85 @@ class EditorActivity : Activity() {
 
     // ---------- Toolbar actions ----------
 
+    private fun endTypingBurst() {
+        uiHandler.removeCallbacks(endBurst)
+        typingBurst = false
+    }
+
+    /**
+     * Gets the note text ready for a command: a cursor that was never placed goes to the end
+     * (not to a hidden spot at the top), and the text gets the focus when the title had it.
+     */
+    private fun focusBody() {
+        if (!bodyEverFocused) {
+            bodyView.setSelection(bodyView.text.length)
+            bodyEverFocused = true
+        }
+        if (!reading && !bodyView.isFocused) bodyView.requestFocus()
+    }
+
     private fun insertAtCursor(text: String) {
+        focusBody()
+        endTypingBurst()
         val e = bodyView.text
         val pos = bodyView.selectionStart.coerceIn(0, e.length)
         e.insert(pos, text)
         bodyView.setSelection((pos + text.length).coerceAtMost(e.length))
+        endTypingBurst()
+        if (reading) showRead()
     }
 
     /** Inserts text on its own line. */
     private fun insertBlock(text: String) {
+        focusBody()
         val e = bodyView.text
         val pos = bodyView.selectionStart.coerceIn(0, e.length)
         val lead = if (pos > 0 && e[pos - 1] != '\n') "\n" else ""
         insertAtCursor("$lead$text\n")
     }
 
+    /** Number of '*' next to a position, looking back (step -1) or forward (step 1). */
+    private fun starRun(e: CharSequence, from: Int, step: Int): Int {
+        var n = 0
+        var i = if (step < 0) from - 1 else from
+        while (i in 0 until e.length && e[i] == '*') {
+            n++
+            i += step
+        }
+        return n
+    }
+
+    /** "*" around "**bold**" belongs to the bold marks, so italic must not take it away. */
+    private fun ownMarks(prefix: String, before: Int, after: Int): Boolean =
+        prefix != "*" || minOf(before, after) != 2
+
     private fun wrap(prefix: String, suffix: String = prefix) {
         val e = bodyView.text
-        val a = minOf(bodyView.selectionStart, bodyView.selectionEnd).coerceIn(0, e.length)
-        val b = maxOf(bodyView.selectionStart, bodyView.selectionEnd).coerceIn(0, e.length)
+        var a = minOf(bodyView.selectionStart, bodyView.selectionEnd).coerceIn(0, e.length)
+        var b = maxOf(bodyView.selectionStart, bodyView.selectionEnd).coerceIn(0, e.length)
+        // A double-tapped word often comes with a space; marks only work when they touch the words.
+        while (a < b && e[a].isWhitespace()) a++
+        while (b > a && e[b - 1].isWhitespace()) b--
+        // Pressing the same button again removes the marks: first those right around the selection...
+        if (a >= prefix.length && b + suffix.length <= e.length &&
+            e.substring(a - prefix.length, a) == prefix && e.substring(b, b + suffix.length) == suffix &&
+            ownMarks(prefix, starRun(e, a, -1), starRun(e, b, 1))
+        ) {
+            e.delete(b, b + suffix.length)
+            e.delete(a - prefix.length, a)
+            bodyView.setSelection(a - prefix.length, b - prefix.length)
+            return
+        }
+        // ...then those inside it, when the marks were selected too.
+        if (b - a >= prefix.length + suffix.length &&
+            e.substring(a, a + prefix.length) == prefix && e.substring(b - suffix.length, b) == suffix &&
+            ownMarks(prefix, starRun(e, a, 1), starRun(e, b, -1))
+        ) {
+            e.delete(b - suffix.length, b)
+            e.delete(a, a + prefix.length)
+            bodyView.setSelection(a, b - prefix.length - suffix.length)
+            return
+        }
         e.insert(b, suffix)
         e.insert(a, prefix)
         if (a == b) {
@@ -1556,6 +1794,48 @@ class EditorActivity : Activity() {
         return intArrayOf(start, end)
     }
 
+    /** Starts of every line the selection touches (just the cursor's line without a selection). */
+    private fun selectedLineStarts(): List<Int> {
+        val e = bodyView.text
+        val a = minOf(bodyView.selectionStart, bodyView.selectionEnd).coerceIn(0, e.length)
+        var b = maxOf(bodyView.selectionStart, bodyView.selectionEnd).coerceIn(0, e.length)
+        // A selection that ends at the very start of a line leaves that line alone.
+        if (b > a && e[b - 1] == '\n') b--
+        var start = a
+        while (start > 0 && e[start - 1] != '\n') start--
+        val out = arrayListOf(start)
+        var i = start
+        while (true) {
+            val nl = TextUtils.indexOf(e, '\n', i)
+            if (nl < 0 || nl >= b) break
+            out.add(nl + 1)
+            i = nl + 1
+        }
+        return out
+    }
+
+    private fun lineAt(e: CharSequence, start: Int): String {
+        val end = TextUtils.indexOf(e, '\n', start).let { if (it < 0) e.length else it }
+        return e.subSequence(start, end).toString()
+    }
+
+    /**
+     * Turns a line format on or off for every selected line: off when all of them have it.
+     * Empty lines inside a longer selection are left alone. Lines are changed from the last one up,
+     * so the positions of the lines above stay right.
+     */
+    private fun toggleLines(has: (String) -> Boolean, change: (Editable, Int, String, Boolean) -> Unit) {
+        val e = bodyView.text
+        val starts = selectedLineStarts()
+        val lines = starts.map { lineAt(e, it) }
+        val used = if (starts.size > 1) starts.indices.filter { lines[it].isNotBlank() } else starts.indices.toList()
+        if (used.isEmpty()) return
+        val removing = used.all { has(lines[it]) }
+        for (i in used.reversed()) change(e, starts[i], lines[i], removing)
+    }
+
+    private fun indentOf(line: String): Int = line.length - line.trimStart(' ', '\t').length
+
     private fun cycleHeading() {
         val e = bodyView.text
         val start = lineBounds()[0]
@@ -1567,39 +1847,66 @@ class EditorActivity : Activity() {
         if (current < 3) e.insert(start, "#".repeat(current + 1) + " ")
     }
 
-    private fun bullet() {
-        val e = bodyView.text
-        val bounds = lineBounds()
-        val start = bounds[0]
-        val line = e.substring(start, bounds[1])
-        val task = TASK_PREFIXES.firstOrNull { line.startsWith(it) }
+    private fun bullet() = toggleLines(
+        { line -> BULLET_LINE.containsMatchIn(line) && !TASK_LINE.containsMatchIn(line) }
+    ) { e, start, line, removing ->
+        val indent = indentOf(line)
+        val task = TASK_LINE.find(line)
+        val mark = BULLET_LINE.find(line)
+        val quoteMark = QUOTE_LINE.find(line)
         when {
-            task != null -> e.replace(start, start + task.length, "- ")
-            line.startsWith("- ") -> e.delete(start, start + 2)
-            line.startsWith("> ") -> e.replace(start, start + 2, "- ")
-            else -> e.insert(start, "- ")
+            removing -> if (mark != null) e.delete(start + indent, start + mark.value.length)
+            task != null -> e.replace(start + indent, start + task.value.length, "- ")
+            mark != null -> Unit
+            quoteMark != null -> e.replace(start, start + quoteMark.value.length, "- ")
+            else -> e.insert(start + indent, "- ")
         }
     }
 
-    private fun task() {
-        val e = bodyView.text
-        val bounds = lineBounds()
-        val start = bounds[0]
-        val line = e.substring(start, bounds[1])
-        val task = TASK_PREFIXES.firstOrNull { line.startsWith(it) }
+    private fun task() = toggleLines({ line -> TASK_LINE.containsMatchIn(line) }) { e, start, line, removing ->
+        val indent = indentOf(line)
+        val task = TASK_LINE.find(line)
+        val mark = BULLET_LINE.find(line)
         when {
-            task != null -> e.delete(start, start + task.length)
-            line.startsWith("- ") -> e.replace(start, start + 2, "- [ ] ")
-            else -> e.insert(start, "- [ ] ")
+            removing -> if (task != null) e.delete(start + indent, start + task.value.length)
+            task != null -> Unit
+            mark != null -> e.replace(start + indent, start + mark.value.length, "- [ ] ")
+            else -> e.insert(start + indent, "- [ ] ")
         }
     }
 
-    private fun quote() {
-        val e = bodyView.text
-        val bounds = lineBounds()
-        val start = bounds[0]
-        val line = e.substring(start, bounds[1])
-        if (line.startsWith("> ")) e.delete(start, start + 2) else e.insert(start, "> ")
+    private fun quote() = toggleLines({ line -> QUOTE_LINE.containsMatchIn(line) }) { e, start, line, removing ->
+        val quoteMark = QUOTE_LINE.find(line)
+        when {
+            removing -> if (quoteMark != null) e.delete(start, start + quoteMark.value.length)
+            quoteMark != null -> Unit
+            else -> e.insert(start, "> ")
+        }
+    }
+
+    /** After Enter on a list line: continue the list, or end it when the item was left empty. */
+    private fun continueList(e: Editable, newline: Int): Boolean {
+        if (newline !in 0 until e.length || e[newline] != '\n') return false
+        var start = newline
+        while (start > 0 && e[start - 1] != '\n') start--
+        val line = e.subSequence(start, newline).toString()
+        if (RULE_LINE.matches(line)) return false
+        val m = LIST_ITEM.find(line) ?: return false
+        var restEnd = newline + 1
+        while (restEnd < e.length && e[restEnd] != '\n') restEnd++
+        if (line.substring(m.value.length).isBlank() && restEnd == newline + 1) {
+            // Enter on an empty item: drop its mark and stay on that line.
+            e.delete(start, newline + 1)
+            return true
+        }
+        val g = m.groupValues
+        val next = g[1] + when {
+            g[2].isNotEmpty() -> g[2] + " [ ] "
+            g[3].isNotEmpty() -> g[3] + " "
+            else -> ((g[4].toLongOrNull() ?: 0L) + 1).toString() + g[5] + " "
+        }
+        e.insert(newline + 1, next)
+        return true
     }
 
     private fun link() {
@@ -1629,6 +1936,9 @@ class EditorActivity : Activity() {
         const val EXTRA_FOLDER = "note_folder"
         private const val KEY_ID = "note_id"
         private const val KEY_EDITING_DRAWING = "editing_drawing"
+        private const val KEY_READING = "reading"
+        private const val KEY_CURSOR = "cursor"
+        private const val MAX_SHARED_BYTES = 2 * 1024 * 1024
         private const val ID_TITLE = 101
         private const val ID_BODY = 102
         private const val REQ_IMAGE = 7
@@ -1657,7 +1967,11 @@ class EditorActivity : Activity() {
         private val WORD = Regex("\\S+")
         private val TOC_HEADING = Regex("^(#{1,6})\\s+(.*)")
         private val TASK_BOX = Regex("^(\\s*[-*+]\\s\\[)([ xX])(]\\s)")
-        private val TASK_PREFIXES = listOf("- [ ] ", "- [x] ", "- [X] ")
+        private val TASK_LINE = Regex("^\\s*[-*+] \\[[ xX]] ")
+        private val BULLET_LINE = Regex("^\\s*[-*+] ")
+        private val QUOTE_LINE = Regex("^> ?")
+        private val LIST_ITEM = Regex("^(\\s*)(?:([-*+]) \\[[ xX]] |([-*+]) |(\\d{1,9})([.)]) )")
+        private val RULE_LINE = Regex("^\\s*([-*_])(\\s*\\1){2,}\\s*$")
         private val IMAGE_LINK = Regex("!\\[[^\\]]*\\]\\(([^)\\s]+)\\)")
     }
 }

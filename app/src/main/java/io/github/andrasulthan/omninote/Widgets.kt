@@ -8,6 +8,7 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.widget.RemoteViews
 import android.widget.Toast
@@ -36,6 +37,9 @@ object Widgets {
      */
     private fun activity(ctx: Context, requestCode: Int, intent: Intent): PendingIntent {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        // Android tells pending intents apart by request code and intent, never by extras. A unique
+        // address keeps a widget's note from being swapped with a reminder's whose code happens to match.
+        if (intent.data == null) intent.data = Uri.parse("omninote-widget://open/$requestCode")
         return PendingIntent.getActivity(
             ctx, requestCode, intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -74,18 +78,29 @@ object Widgets {
 
     fun updateNote(ctx: Context, manager: AppWidgetManager, widgetId: Int) {
         val views = RemoteViews(ctx.packageName, R.layout.widget_note)
+        val store = NoteStore(ctx)
         val noteId = noteFor(ctx, widgetId)
-        val raw = if (noteId == null) "" else try {
-            NoteStore(ctx).read(noteId)
+        // A note of another notes location (after switching folders) cannot be opened any more.
+        val raw = if (noteId == null || !store.owns(noteId)) null else try {
+            store.read(noteId)
         } catch (e: Exception) {
-            ""
+            null
         }
-        if (noteId == null || raw.isBlank()) {
+        if (noteId == null || raw == null) {
+            // Not set up yet (some launchers, Huawei among them, skip the setup screen) or the note is
+            // gone: tapping lets the person pick a note for this widget.
             views.setTextViewText(R.id.widget_note_title, ctx.getString(R.string.app_name))
-            views.setTextViewText(R.id.widget_note_body, ctx.getString(R.string.widget_note_missing))
+            views.setTextViewText(
+                R.id.widget_note_body,
+                ctx.getString(if (noteId == null) R.string.fix_widget_choose else R.string.fix_widget_missing)
+            )
             views.setOnClickPendingIntent(
                 R.id.widget_note_root,
-                activity(ctx, 1000 + widgetId, Intent(ctx, MainActivity::class.java))
+                activity(
+                    ctx, 1000 + widgetId,
+                    Intent(ctx, NoteWidgetConfigActivity::class.java)
+                        .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId)
+                )
             )
         } else {
             if (Vault.isLocked(raw)) {
@@ -94,10 +109,16 @@ object Widgets {
             } else {
                 val (_, content) = NoteMeta.parse(raw)
                 val (title, body) = NoteStore.split(content)
-                views.setTextViewText(
-                    R.id.widget_note_title,
-                    title.ifBlank { ctx.getString(R.string.widget_empty_note) }
-                )
+                // Notes without a "# " title are named after their file, like on the home screen.
+                val shownTitle = title.ifBlank {
+                    val file = try {
+                        store.fileNameOf(noteId).substringBeforeLast('.')
+                    } catch (e: Exception) {
+                        ""
+                    }
+                    file.ifBlank { ctx.getString(R.string.widget_empty_note) }
+                }
+                views.setTextViewText(R.id.widget_note_title, shownTitle)
                 views.setTextViewText(R.id.widget_note_body, Markdown.plain(body.trim().take(1200)))
             }
             views.setOnClickPendingIntent(
@@ -109,6 +130,19 @@ object Widgets {
             )
         }
         manager.updateAppWidget(widgetId, views)
+    }
+
+    /** Redraws one note widget off the main thread (used right after it was set up). */
+    fun refreshNote(ctx: Context, widgetId: Int) {
+        val app = ctx.applicationContext
+        worker.execute {
+            try {
+                val manager = AppWidgetManager.getInstance(app) ?: return@execute
+                updateNote(app, manager, widgetId)
+            } catch (e: Exception) {
+                // Drawn again on the next refresh.
+            }
+        }
     }
 
     /** Redraws every note widget, for example after a note was saved. */
@@ -208,7 +242,8 @@ class NoteWidgetConfigActivity : Activity() {
 
     private fun choose(note: Note) {
         Widgets.setNote(this, widgetId, note.id)
-        Widgets.refreshNotes(this)
+        // The setup screen must draw the new widget itself; some launchers (Huawei) send no update after it.
+        Widgets.refreshNote(this, widgetId)
         setResult(RESULT_OK, Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId))
         finish()
     }

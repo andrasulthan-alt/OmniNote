@@ -29,6 +29,7 @@ object AppLock {
     private const val KEY_MODE = "app_lock_mode"
     private const val VAULT_TIMEOUT = 5 * 60_000L
     private const val CONFIG_CHANGE_MS = 5_000L
+    private const val UNLOCK_GRACE = 5_000L
 
     @Volatile
     var locked = false
@@ -37,6 +38,7 @@ object AppLock {
     private var leftAt = 0L
     private var changingConfig = false
     private var changingConfigAt = 0L
+    private var unlockedAt = 0L
 
     /** 0 off, 1 right away (15 s grace), 2 after 1 minute, 3 after 5 minutes. */
     fun mode(ctx: Context): Int =
@@ -84,7 +86,16 @@ object AppLock {
         }
     }
 
+    /** Called once the phone's screen lock was confirmed. */
+    fun unlock() {
+        locked = false
+        unlockedAt = SystemClock.elapsedRealtime()
+    }
+
     private fun onForeground(ctx: Context) {
+        // Typing the PIN opens the phone's own screen, which counts as leaving OmniNote. Coming back
+        // from it right after unlocking must not lock again (that asked for the PIN twice).
+        if (unlockedAt != 0L && SystemClock.elapsedRealtime() - unlockedAt < UNLOCK_GRACE) return
         val away = if (leftAt == 0L) Long.MAX_VALUE else SystemClock.elapsedRealtime() - leftAt
         if (away > VAULT_TIMEOUT) Vault.close()
         val mode = mode(ctx)
@@ -169,7 +180,7 @@ class LockActivity : Activity() {
     }
 
     private fun unlocked() {
-        AppLock.locked = false
+        AppLock.unlock()
         finish()
     }
 
@@ -186,6 +197,12 @@ class LockActivity : Activity() {
             prompt.authenticate(CancellationSignal(), mainExecutor, object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult?) {
                     unlocked()
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence?) {
+                    // The screen lock was removed after the app lock was turned on: there is nothing
+                    // left to ask for, so do not keep the notes locked away for good.
+                    if (!AppLock.canUse(this@LockActivity)) unlocked()
                 }
             })
         } else {
@@ -250,7 +267,8 @@ object CrashLog {
 
     fun showIfAny(activity: Activity) {
         val file = File(activity.filesDir, FILE)
-        if (!file.exists()) return
+        // A closing screen cannot show the dialog; keep the report for the next one.
+        if (!file.exists() || activity.isFinishing) return
         val text = try {
             file.readText()
         } catch (e: Exception) {

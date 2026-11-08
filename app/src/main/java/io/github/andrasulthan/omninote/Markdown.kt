@@ -91,7 +91,7 @@ object Markdown {
     private val BULLET = Regex("^(\\s*)([-*+]|\\d+[.)])\\s")
     private val FENCE = Regex("^\\s*```")
     private val RULE = Regex("^\\s*(-{3,}|\\*{3,}|_{3,})\\s*$")
-    private val TABLE_SEP = Regex("^:?-{3,}:?$")
+    private val TABLE_SEP = Regex("^:?-+:?$")
     private val BOLD = Regex("\\*\\*(.+?)\\*\\*")
     private val ITALIC = Regex("(?<![*\\w])\\*(?![\\s*])(.+?)(?<![\\s*])\\*(?![*\\w])")
     private val STRIKE = Regex("~~(.+?)~~")
@@ -99,7 +99,8 @@ object Markdown {
     private val IMAGE = Regex("!\\[([^\\]]*)]\\(([^)\\s]+)\\)")
     private val WIKI = Regex("\\[\\[([^\\]]+)]]")
     private val LINK = Regex("\\[([^\\]]+)]\\(([^)\\s]+)\\)")
-    private val URL = Regex("https?://[^\\s)]+")
+    // A full stop or comma right after a web address ends the sentence, not the address.
+    private val URL = Regex("https?://[^\\s)]*[^\\s).,;:!?'\"]")
     private val TOKEN = Regex(
         "!\\[([^\\]]*)]\\(([^)\\s]+)\\)" +
             "|\\[\\[([^\\]]+)]]" +
@@ -108,8 +109,10 @@ object Markdown {
             "|~~(.+?)~~" +
             "|\\[([^\\]]+)]\\(([^)\\s]+)\\)" +
             "|(?<![*\\w])\\*(?![\\s*])(.+?)(?<![\\s*])\\*(?![*\\w])" +
-            "|(https?://[^\\s)]+)"
+            "|(https?://[^\\s)]*[^\\s).,;:!?'\"])" +
+            "|!\\[\\[([^\\]]+)]]"
     )
+    private val IMAGE_FILE = Regex("\\.(png|jpe?g|gif|webp|bmp)$", RegexOption.IGNORE_CASE)
     private val HEAD_SIZES = floatArrayOf(1.6f, 1.4f, 1.25f, 1.15f, 1.05f, 1.0f)
 
     private fun span(s: Spannable, what: Any, start: Int, end: Int) {
@@ -267,7 +270,10 @@ object Markdown {
                 val rows = ArrayList<List<String>>()
                 while (i < lines.size && lines[i].trimStart().startsWith("|")) {
                     val cells = splitRow(lines[i])
-                    if (!cells.all { TABLE_SEP.matches(it) }) rows.add(cells)
+                    // A short "-" separator only counts right under the header; elsewhere "| - | - |" is data.
+                    val separator = cells.all { TABLE_SEP.matches(it) } &&
+                        (rows.size == 1 || cells.all { it.trim(':').length >= 3 })
+                    if (!separator) rows.add(cells)
                     i++
                 }
                 appendTable(out, rows, p)
@@ -359,10 +365,7 @@ object Markdown {
                         span(out, MdColor(p.muted), s, out.length)
                     }
                 }
-                g[3].isNotEmpty() -> {
-                    out.append(g[3])
-                    span(out, MdLink(g[3], p.text, ctx.onNote), s, out.length)
-                }
+                g[3].isNotEmpty() -> appendWiki(out, g[3], ctx)
                 g[4].isNotEmpty() -> {
                     out.append(g[4])
                     span(out, MdBack(p.border), s, out.length)
@@ -383,15 +386,43 @@ object Markdown {
                     out.append(g[9])
                     span(out, MdStyle(Typeface.ITALIC), s, out.length)
                 }
-                else -> {
+                g[10].isNotEmpty() -> {
                     out.append(g[10])
                     span(out, MdLink(g[10], p.text, ctx.onLink), s, out.length)
+                }
+                else -> {
+                    // Obsidian embeds: ![[photo.jpg]] shows the picture, ![[Other note]] links to the note.
+                    val target = g[11].substringBefore('|').trim()
+                    if (IMAGE_FILE.containsMatchIn(target)) {
+                        val picture = ctx.loadImage(target)
+                        if (picture != null) {
+                            out.append("\uFFFC")
+                            span(out, ImageSpan(picture), s, out.length)
+                        } else {
+                            out.append(ctx.missingImage)
+                            span(out, MdColor(p.muted), s, out.length)
+                        }
+                    } else {
+                        appendWiki(out, g[11], ctx)
+                    }
                 }
             }
             last = m.range.last + 1
         }
         out.append(text, last, text.length)
     }
+
+    /** [[Note]], [[Note|shown text]] and [[Note#Heading]]: shows the text, opens the note. */
+    private fun appendWiki(out: SpannableStringBuilder, inner: String, ctx: RenderContext) {
+        val target = inner.substringBefore('|').substringBefore('#').trim()
+        val label = wikiLabel(inner)
+        val s = out.length
+        out.append(label)
+        if (target.isNotEmpty()) span(out, MdLink(target, ctx.p.text, ctx.onNote), s, out.length)
+    }
+
+    private fun wikiLabel(inner: String): String =
+        inner.substringAfter('|', "").trim().ifEmpty { inner.substringBefore('|').trim() }.ifEmpty { inner }
 
     private fun splitRow(line: String): List<String> =
         line.trim().removePrefix("|").removeSuffix("|").split("|").map { it.trim() }
@@ -426,7 +457,7 @@ object Markdown {
 
     fun plain(text: String): String = text
         .replace(IMAGE, "🖼")
-        .replace(WIKI) { it.groupValues[1] }
+        .replace(WIKI) { wikiLabel(it.groupValues[1]) }
         .replace(Regex("[-*+] \\[ ] "), "☐ ")
         .replace(Regex("[-*+] \\[[xX]] "), "☑ ")
         .replace(Regex("(^|\\s)#{1,6} "), "$1")

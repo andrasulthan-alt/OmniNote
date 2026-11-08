@@ -211,6 +211,36 @@ object Transfer {
     fun countNotes(root: NotesRoot): Int =
         root.files().count { it.endsWith(".md") && !it.startsWith(".") }
 
+    /**
+     * Syncthing's own bookkeeping in a synced folder (old versions can be large).
+     * It never belongs in a backup, an export or a copy to another location.
+     */
+    private val SYNCTHING_DIRS = setOf(".stfolder", ".stversions", ".stignore")
+
+    private fun isSyncthingFile(rel: String): Boolean = rel.substringBefore('/') in SYNCTHING_DIRS
+
+    /** Largest single file read into memory on import, so a wrongly picked video cannot crash the app. */
+    private const val MAX_TEXT_BYTES = 16 * 1024 * 1024
+
+    /** Reads at most [MAX_TEXT_BYTES]; a bigger file is refused instead of filling the memory. */
+    private fun readLimited(input: InputStream): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        while (true) {
+            val n = input.read(buffer)
+            if (n < 0) break
+            out.write(buffer, 0, n)
+            if (out.size() > MAX_TEXT_BYTES) throw IllegalStateException("File too large")
+        }
+        return out.toByteArray()
+    }
+
+    /** UTF-8 text without a leading byte order mark (Windows Notepad adds one), or null for binary files. */
+    private fun textOf(bytes: ByteArray): String? {
+        if (bytes.any { it == 0.toByte() }) return null
+        return bytes.toString(Charsets.UTF_8).removePrefix("\uFEFF")
+    }
+
     // ---------- Export ----------
 
     /** Writes every file of the current notes location into one ZIP. Returns the number of notes. */
@@ -219,8 +249,13 @@ object Transfer {
         var count = 0
         ZipOutputStream(out).use { zip ->
             for (rel in root.files()) {
-                if (rel.lowercase().endsWith(".zip")) continue
-                val input = root.open(rel) ?: continue
+                if (rel.lowercase().endsWith(".zip") || isSyncthingFile(rel)) continue
+                // One file that cannot be opened (being synced right now) does not spoil the whole export.
+                val input = try {
+                    root.open(rel)
+                } catch (e: Exception) {
+                    null
+                } ?: continue
                 zip.putNextEntry(ZipEntry(rel))
                 input.use { it.copyTo(zip) }
                 zip.closeEntry()
@@ -236,7 +271,7 @@ object Transfer {
     fun copyAll(from: NotesRoot, to: NotesRoot): Int {
         var count = 0
         for (rel in from.files()) {
-            if (to.exists(rel)) continue
+            if (isSyncthingFile(rel) || to.exists(rel)) continue
             val input = from.open(rel) ?: continue
             input.use { to.write(rel, it) }
             count++
@@ -255,11 +290,20 @@ object Transfer {
                 val name = displayName(ctx, uri) ?: "Imported.md"
                 val ext = name.substringAfterLast('.', "").lowercase()
                 val input = ctx.contentResolver.openInputStream(uri) ?: throw IllegalStateException("No input")
-                notes += input.use { stream ->
-                    if (ext == "zip") {
+                notes += input.buffered().use { stream ->
+                    // Some pickers give no file name; a ZIP is then still recognised by its first bytes.
+                    stream.mark(4)
+                    val head = ByteArray(4)
+                    val read = stream.read(head)
+                    stream.reset()
+                    val isZip = read == 4 && head[0] == 'P'.code.toByte() && head[1] == 'K'.code.toByte() &&
+                        head[2] == 3.toByte() && head[3] == 4.toByte()
+                    if (ext == "zip" || isZip) {
                         importZip(ctx, stream)
                     } else {
-                        importText(ctx, name, stream.readBytes().toString(Charsets.UTF_8))
+                        // Pictures, PDFs and other binary files are refused instead of becoming garbled notes.
+                        val text = textOf(readLimited(stream)) ?: throw IllegalStateException("Not a text file")
+                        importText(ctx, name, text)
                     }
                 }
             } catch (e: Exception) {
@@ -276,7 +320,15 @@ object Transfer {
 
     private fun importText(ctx: Context, fileName: String, text: String): Int {
         val trimmed = text.trimStart()
-        if (isScarletJson(trimmed)) return importScarlet(ctx, trimmed)
+        if (isScarletJson(trimmed)) {
+            // Text that only looks like a Scarlet backup is imported as a normal note instead.
+            val scarlet = try {
+                importScarlet(ctx, trimmed)
+            } catch (e: org.json.JSONException) {
+                -1
+            }
+            if (scarlet >= 0) return scarlet
+        }
         if (trimmed.startsWith(SCARLET_SEPARATOR)) return importScarletMarkdown(ctx, trimmed)
         if (text.isBlank()) return 0
         val root = currentRoot(ctx)
@@ -301,7 +353,8 @@ object Transfer {
                     when {
                         junk -> Unit
                         rel == ".omninote/vault.txt" -> if (!root.exists(rel)) root.write(rel, zip)
-                        ext == "json" && name.startsWith("drawing-") -> drawingData[name] = zip.readBytes()
+                        isSyncthingFile(rel) -> Unit
+                        ext == "json" && name.startsWith("drawing-") -> drawingData[name] = readLimited(zip)
                         ext in IMAGE_EXT -> {
                             val safe = name.replace(Regex("[\\s()\\[\\]]+"), "-")
                             val target = root.freePath("attachments/$safe", "-", "")
@@ -309,7 +362,7 @@ object Transfer {
                             images[name] = target
                             images[safe] = target
                         }
-                        ext in TEXT_EXT -> texts.add(rel to zip.readBytes().toString(Charsets.UTF_8))
+                        ext in TEXT_EXT -> textOf(readLimited(zip))?.let { texts.add(rel to it) }
                     }
                 }
                 zip.closeEntry()
@@ -324,8 +377,16 @@ object Transfer {
         var count = 0
         for ((rel, text) in texts) {
             if (isScarletJson(text)) {
-                count += importScarlet(ctx, text.trimStart())
-                continue
+                // A text file that only looks like a Scarlet backup is kept as a normal note below.
+                val scarlet = try {
+                    importScarlet(ctx, text.trimStart())
+                } catch (e: org.json.JSONException) {
+                    -1
+                }
+                if (scarlet >= 0) {
+                    count += scarlet
+                    continue
+                }
             }
             if (text.isBlank()) continue
             val target = if (rel.lowercase().endsWith(".md")) rel else rel.substringBeforeLast('.') + ".md"
@@ -489,13 +550,30 @@ object Transfer {
 
     fun lastBackup(ctx: Context): Long = prefs(ctx).getLong(KEY_LAST_BACKUP, 0L)
 
-    /** Writes a dated ZIP into the backup folder and keeps only the newest ones. */
-    fun backupNow(ctx: Context): Boolean {
+    /**
+     * Writes a dated ZIP into the backup folder and keeps only the newest ones.
+     * One backup at a time: picking a backup folder starts "back up now" and the automatic
+     * backup together, and two writers on the same file name would leave a broken ZIP.
+     */
+    fun backupNow(ctx: Context): Boolean = synchronized(backupLock) { backupLocked(ctx) }
+
+    private val backupLock = Any()
+
+    private fun backupLocked(ctx: Context): Boolean {
         val tree = backupTree(ctx) ?: return false
+        val dest = try {
+            NotesRoot(ctx, tree)
+        } catch (e: Exception) {
+            return false
+        }
+        var unfinished: String? = null
         return try {
-            val dest = NotesRoot(ctx, tree)
             val name = BACKUP_PREFIX + SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date()) + ".zip"
-            exportZip(ctx, dest.openWrite(dest.freePath(name, "-", "")))
+            val path = dest.freePath(name, "-", "")
+            val out = dest.openWrite(path)
+            unfinished = path
+            exportZip(ctx, out)
+            unfinished = null
             dest.files(recursive = false)
                 .filter { it.startsWith(BACKUP_PREFIX) && it.endsWith(".zip") }
                 .sorted()
@@ -504,6 +582,13 @@ object Transfer {
             prefs(ctx).edit().putLong(KEY_LAST_BACKUP, System.currentTimeMillis()).apply()
             true
         } catch (e: Exception) {
+            // A half-written ZIP would look like a good backup and push a complete one out of the 7 kept.
+            unfinished?.let { path ->
+                try {
+                    dest.delete(path)
+                } catch (ignored: Exception) {
+                }
+            }
             false
         }
     }
@@ -516,7 +601,10 @@ object Transfer {
         val app = ctx.applicationContext
         Thread {
             try {
-                backupNow(app)
+                synchronized(backupLock) {
+                    // A backup made meanwhile (for example right after choosing the folder) is enough.
+                    if (System.currentTimeMillis() - lastBackup(app) >= DAY) backupLocked(app)
+                }
             } catch (e: Exception) {
                 // Tried again next time the app opens.
             } finally {

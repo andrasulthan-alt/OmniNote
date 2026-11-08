@@ -56,6 +56,10 @@ public final class Argon2 {
         long[] input = new long[BLOCK_WORDS];
         long[] address = new long[BLOCK_WORDS];
         long[] tmp = new long[BLOCK_WORDS];
+        // Scratch blocks are reused, so the passes after the first allocate nothing
+        // (tens of thousands of short-lived arrays made old phones stall in garbage collection).
+        long[] tmp2 = new long[BLOCK_WORDS];
+        long[] first = new long[BLOCK_WORDS];
 
         for (int pass = 0; pass < iterations; pass++) {
             for (int slice = 0; slice < 4; slice++) {
@@ -71,14 +75,14 @@ public final class Argon2 {
                         input[5] = TYPE_ID;
                     }
                     int startIndex = (pass == 0 && slice == 0) ? 2 : 0;
-                    if (independent && startIndex != 0) nextAddresses(input, address, zero, tmp);
+                    if (independent && startIndex != 0) nextAddresses(input, address, zero, first, tmp, tmp2);
                     for (int index = startIndex; index < segmentLength; index++) {
                         int col = slice * segmentLength + index;
                         int cur = lane * laneLength + col;
                         int prev = (col == 0) ? lane * laneLength + laneLength - 1 : cur - 1;
                         long pseudo;
                         if (independent) {
-                            if (index % BLOCK_WORDS == 0) nextAddresses(input, address, zero, tmp);
+                            if (index % BLOCK_WORDS == 0) nextAddresses(input, address, zero, first, tmp, tmp2);
                             pseudo = address[index % BLOCK_WORDS];
                         } else {
                             pseudo = memory[prev][0];
@@ -107,13 +111,14 @@ public final class Argon2 {
                         long start = (pass == 0) ? 0 : ((long) (slice + 1) * segmentLength) % laneLength;
                         int refCol = (int) ((start + z) % laneLength);
                         long[] ref = memory[refLane * laneLength + refCol];
-                        long[] out = new long[BLOCK_WORDS];
-                        compress(memory[prev], ref, out, tmp);
                         if (pass > 0 && memory[cur] != null) {
-                            long[] old = memory[cur];
-                            for (int k = 0; k < BLOCK_WORDS; k++) out[k] ^= old[k];
+                            // Version 0x13: the new block is XORed into the old one, in place.
+                            compress(memory[prev], ref, memory[cur], tmp, tmp2, true);
+                        } else {
+                            long[] out = new long[BLOCK_WORDS];
+                            compress(memory[prev], ref, out, tmp, tmp2, false);
+                            memory[cur] = out;
                         }
-                        memory[cur] = out;
                     }
                 }
             }
@@ -127,17 +132,23 @@ public final class Argon2 {
         return longHash(toBytes(last), outLen);
     }
 
-    private static void nextAddresses(long[] input, long[] address, long[] zero, long[] tmp) {
+    private static void nextAddresses(long[] input, long[] address, long[] zero, long[] first,
+                                      long[] r, long[] q) {
         input[6]++;
-        long[] first = new long[BLOCK_WORDS];
-        compress(zero, input, first, tmp);
-        compress(zero, first, address, tmp);
+        compress(zero, input, first, r, q, false);
+        compress(zero, first, address, r, q, false);
     }
 
-    /** G(X, Y): out = P(X xor Y) xor (X xor Y). */
-    private static void compress(long[] x, long[] y, long[] out, long[] r) {
-        for (int i = 0; i < BLOCK_WORDS; i++) r[i] = x[i] ^ y[i];
-        long[] q = r.clone();
+    /**
+     * G(X, Y): out = P(X xor Y) xor (X xor Y), or out ^= that when xor is set.
+     * X and Y are read completely before out is written, so out may be X or Y.
+     */
+    private static void compress(long[] x, long[] y, long[] out, long[] r, long[] q, boolean xor) {
+        for (int i = 0; i < BLOCK_WORDS; i++) {
+            long v = x[i] ^ y[i];
+            r[i] = v;
+            q[i] = v;
+        }
         for (int row = 0; row < 8; row++) {
             int b = row * 16;
             permute(q, b, b + 1, b + 2, b + 3, b + 4, b + 5, b + 6, b + 7,
@@ -148,7 +159,11 @@ public final class Argon2 {
             permute(q, b, b + 1, b + 16, b + 17, b + 32, b + 33, b + 48, b + 49,
                 b + 64, b + 65, b + 80, b + 81, b + 96, b + 97, b + 112, b + 113);
         }
-        for (int i = 0; i < BLOCK_WORDS; i++) out[i] = q[i] ^ r[i];
+        if (xor) {
+            for (int i = 0; i < BLOCK_WORDS; i++) out[i] ^= q[i] ^ r[i];
+        } else {
+            for (int i = 0; i < BLOCK_WORDS; i++) out[i] = q[i] ^ r[i];
+        }
     }
 
     private static void permute(long[] v, int i0, int i1, int i2, int i3, int i4, int i5, int i6, int i7,

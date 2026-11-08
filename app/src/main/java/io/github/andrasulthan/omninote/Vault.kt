@@ -1,6 +1,7 @@
 package io.github.andrasulthan.omninote
 
 import java.security.SecureRandom
+import java.text.Normalizer
 import java.util.Base64
 
 /**
@@ -61,7 +62,8 @@ object Vault {
         // also on synced devices. A read error here stops the setup instead of guessing.
         if (store.readHidden(FILE) != null || store.list().any { it.meta.vault }) throw ExistsException()
         val salt = VaultCrypto.newSalt()
-        val newKey = VaultCrypto.deriveKey(password, salt)
+        // The same password typed on another keyboard may come in another Unicode form; store one form.
+        val newKey = VaultCrypto.deriveKey(Normalizer.normalize(password, Normalizer.Form.NFC), salt)
         val check = VaultCrypto.makeCheck(newKey)
         val text = "version=1\n" +
             "salt=" + encode(salt) + "\n" +
@@ -74,22 +76,33 @@ object Vault {
     /** Opens the vault when the password is right. Slow on purpose, call it off the main thread. */
     fun open(store: NoteStore, password: String): Boolean {
         val c = config(store) ?: return false
-        val tryKey = VaultCrypto.deriveKey(password, c.salt)
-        return if (VaultCrypto.verify(tryKey, c.check)) {
-            key = tryKey
-            true
-        } else {
+        // Vaults made before the password was normalized used it exactly as typed, so try that too.
+        val forms = listOf(
+            Normalizer.normalize(password, Normalizer.Form.NFC),
+            password,
+            Normalizer.normalize(password, Normalizer.Form.NFD)
+        ).distinct()
+        for (form in forms) {
+            val tryKey = VaultCrypto.deriveKey(form, c.salt)
+            if (VaultCrypto.verify(tryKey, c.check)) {
+                key = tryKey
+                return true
+            }
             tryKey.fill(0)
-            false
         }
+        return false
     }
 
     fun isLocked(fileText: String): Boolean = NoteMeta.parse(fileText).first.vault
 
-    /** Encrypts a whole note (properties and text) into the text of a locked file. */
+    /**
+     * Encrypts a whole note (properties and text) into the text of a locked file.
+     * Only the reminder time stays readable, so the reminder can be set again after a restart.
+     */
     fun seal(plain: String): String {
         val k = key ?: throw IllegalStateException("Vault is closed")
-        return NoteMeta.build(NoteMeta(vault = true), VaultCrypto.encrypt(k, plain) + "\n")
+        val remind = NoteMeta.parse(plain).first.remind
+        return NoteMeta.build(NoteMeta(vault = true, remind = remind), VaultCrypto.encrypt(k, plain) + "\n")
     }
 
     /** Gives back the original note text of a locked file. */

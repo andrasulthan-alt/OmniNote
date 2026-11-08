@@ -254,7 +254,12 @@ class DrawActivity : Activity() {
 
     private fun save() {
         if (saving) return
-        val png = drawView.exportPng()
+        val png = try {
+            drawView.exportPng()
+        } catch (e: OutOfMemoryError) {
+            Toast.makeText(this, R.string.draw_error, Toast.LENGTH_LONG).show()
+            return
+        }
         if (png == null) {
             Toast.makeText(this, R.string.draw_empty, Toast.LENGTH_SHORT).show()
             return
@@ -300,6 +305,7 @@ class DrawActivity : Activity() {
         private val redoStack = ArrayList<List<Stroke>>()
         private var current: ArrayList<Float>? = null
         private var erasedThisTouch = false
+        private var pointerId = -1
         private var eraseStart: List<Stroke>? = null
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
@@ -349,6 +355,7 @@ class DrawActivity : Activity() {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     parent?.requestDisallowInterceptTouchEvent(true)
+                    pointerId = event.getPointerId(0)
                     if (erasing) {
                         // Undo history only changes when the eraser really removes something.
                         eraseStart = ArrayList(strokes)
@@ -359,40 +366,53 @@ class DrawActivity : Activity() {
                     }
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    // Follow only the finger that started the line: a palm or second finger
+                    // used to make the line jump across the canvas.
+                    val index = event.findPointerIndex(pointerId)
+                    if (index < 0) return true
                     if (erasing) {
-                        for (h in 0 until event.historySize) eraseAt(event.getHistoricalX(h) / s, event.getHistoricalY(h) / s)
-                        eraseAt(event.x / s, event.y / s)
+                        for (h in 0 until event.historySize) {
+                            eraseAt(event.getHistoricalX(index, h) / s, event.getHistoricalY(index, h) / s)
+                        }
+                        eraseAt(event.getX(index) / s, event.getY(index) / s)
                     } else {
                         val points = current ?: return true
                         for (h in 0 until event.historySize) {
-                            points.add(event.getHistoricalX(h) / s)
-                            points.add(event.getHistoricalY(h) / s)
+                            points.add(event.getHistoricalX(index, h) / s)
+                            points.add(event.getHistoricalY(index, h) / s)
                         }
-                        points.add(event.x / s)
-                        points.add(event.y / s)
+                        points.add(event.getX(index) / s)
+                        points.add(event.getY(index) / s)
                     }
                     invalidate()
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    if (erasing) {
-                        eraseStart = null
-                    } else {
-                        val points = current
-                        if (points != null && points.size >= 2) {
-                            if (points.size == 2) {
-                                points.add(points[0] + 0.1f)
-                                points.add(points[1])
-                            }
-                            remember()
-                            strokes.add(Stroke(color, strokeWidth, points.toFloatArray()))
-                            changed = true
-                        }
-                        current = null
-                    }
-                    invalidate()
+                MotionEvent.ACTION_POINTER_UP -> {
+                    if (event.getPointerId(event.actionIndex) == pointerId) endTouch()
                 }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> endTouch()
             }
             return true
+        }
+
+        /** Ends the line (or the eraser move) of the finger that is followed. */
+        private fun endTouch() {
+            pointerId = -1
+            if (erasing) {
+                eraseStart = null
+            } else {
+                val points = current
+                if (points != null && points.size >= 2) {
+                    if (points.size == 2) {
+                        points.add(points[0] + 0.1f)
+                        points.add(points[1])
+                    }
+                    remember()
+                    strokes.add(Stroke(color, strokeWidth, points.toFloatArray()))
+                    changed = true
+                }
+                current = null
+            }
+            invalidate()
         }
 
         private fun eraseAt(x: Float, y: Float) {

@@ -141,7 +141,7 @@ class NoteStore(private val ctx: Context) {
                 val files = File(localDir, TRASH).listFiles() ?: emptyArray()
                 for (f in files) {
                     if (f.isFile && isMd(f.name)) {
-                        load(f.absolutePath, f.name, f.lastModified(), TRASH, notes) { f.readText() }
+                        load(f.absolutePath, f.name, f.lastModified(), f.length(), TRASH, notes) { f.readText() }
                     }
                 }
             } else {
@@ -154,7 +154,7 @@ class NoteStore(private val ctx: Context) {
                     for (d in children(tree, trashId)) {
                         if (!d.isDir && isMd(d.name)) {
                             val uri = DocumentsContract.buildDocumentUriUsingTree(tree, d.id).toString()
-                            load(uri, d.name, d.modified, TRASH, notes) { read(uri) }
+                            load(uri, d.name, d.modified, d.size, TRASH, notes) { read(uri) }
                         }
                     }
                 }
@@ -181,7 +181,7 @@ class NoteStore(private val ctx: Context) {
             if (f.isDirectory) {
                 if (!isSpecial(f.name)) walkLocal(f, joinPath(path, f.name), out)
             } else if (isMd(f.name)) {
-                load(f.absolutePath, f.name, f.lastModified(), path, out) { f.readText() }
+                load(f.absolutePath, f.name, f.lastModified(), f.length(), path, out) { f.readText() }
             }
         }
     }
@@ -204,7 +204,7 @@ class NoteStore(private val ctx: Context) {
                 if (!isSpecial(d.name)) walkTree(tree, d.id, joinPath(path, d.name), out, depth + 1)
             } else if (isMd(d.name)) {
                 val uri = DocumentsContract.buildDocumentUriUsingTree(tree, d.id).toString()
-                load(uri, d.name, d.modified, path, out) { read(uri) }
+                load(uri, d.name, d.modified, d.size, path, out) { read(uri) }
             }
         }
     }
@@ -239,9 +239,10 @@ class NoteStore(private val ctx: Context) {
 
     fun read(id: String): String {
         return if (id.startsWith(CONTENT)) {
+            // No stream is an error: an empty text here would let a save wipe the note.
             ctx.contentResolver.openInputStream(Uri.parse(id))?.use {
                 it.readBytes().toString(Charsets.UTF_8)
-            } ?: ""
+            } ?: throw java.io.FileNotFoundException(id)
         } else {
             val f = File(id)
             if (!f.exists()) throw java.io.FileNotFoundException(id)
@@ -267,9 +268,9 @@ class NoteStore(private val ctx: Context) {
 
     private fun write(id: String, text: String) {
         if (id.startsWith(CONTENT)) {
-            ctx.contentResolver.openOutputStream(Uri.parse(id), "wt")?.use {
-                it.write(text.toByteArray(Charsets.UTF_8))
-            }
+            val out = ctx.contentResolver.openOutputStream(Uri.parse(id), "wt")
+                ?: throw java.io.IOException("Cannot write $id")
+            out.use { it.write(text.toByteArray(Charsets.UTF_8)) }
         } else {
             // Write to a temporary file first, so a crash never leaves a half-written note.
             val target = File(id)
@@ -294,7 +295,10 @@ class NoteStore(private val ctx: Context) {
             return if (src.renameTo(dest)) dest.absolutePath else id
         }
         return try {
-            DocumentsContract.renameDocument(ctx.contentResolver, Uri.parse(id), name)?.toString() ?: id
+            val uri = Uri.parse(id)
+            // The folder app would rename "Note.md" to "Note (1).md" when the name does not change.
+            if (displayName(uri) == name) return id
+            DocumentsContract.renameDocument(ctx.contentResolver, uri, name)?.toString() ?: id
         } catch (e: Exception) {
             id
         }
@@ -317,7 +321,8 @@ class NoteStore(private val ctx: Context) {
         val tree = treeUri
         if (tree == null) {
             val dir = File(localDir, HIDDEN).apply { mkdirs() }
-            File(dir, name).writeText(text)
+            // Through a temporary file: a half-written vault.txt would make every locked note unreadable.
+            write(File(dir, name).absolutePath, text)
             return
         }
         val dirId = folderDocId(tree, HIDDEN, create = true)
@@ -370,10 +375,20 @@ class NoteStore(private val ctx: Context) {
             // Some folders cannot move files; copy and delete below instead.
         }
         val name = displayName(srcUri) ?: fileNameFor("")
+        // Read first, so a note that cannot be read never leaves an empty copy behind.
+        val text = read(id)
         val copy = DocumentsContract.createDocument(
             ctx.contentResolver, targetUri, "application/octet-stream", name
         ) ?: throw IllegalStateException("Cannot move $name")
-        write(copy.toString(), read(id))
+        try {
+            write(copy.toString(), text)
+        } catch (e: Exception) {
+            try {
+                DocumentsContract.deleteDocument(ctx.contentResolver, copy)
+            } catch (ignored: Exception) {
+            }
+            throw e
+        }
         DocumentsContract.deleteDocument(ctx.contentResolver, srcUri)
         return copy.toString()
     }
@@ -438,7 +453,9 @@ class NoteStore(private val ctx: Context) {
         return try {
             val root = DocumentsContract.getTreeDocumentId(tree)
             val doc = DocumentsContract.getDocumentId(Uri.parse(id))
-            if (doc.startsWith("$root/")) doc.removePrefix("$root/").substringBeforeLast('/', "") else ""
+            // A folder at the top of a storage has an id like "primary:" or "1234-ABCD:".
+            val prefix = if (root.endsWith(":") || root.endsWith("/")) root else "$root/"
+            if (doc.startsWith(prefix)) doc.removePrefix(prefix).substringBeforeLast('/', "") else ""
         } catch (e: Exception) {
             ""
         }
@@ -470,7 +487,9 @@ class NoteStore(private val ctx: Context) {
                 val file = DocumentsContract.createDocument(
                     ctx.contentResolver, dirUri, "application/octet-stream", name
                 ) ?: throw IllegalStateException("Cannot create $name")
-                ctx.contentResolver.openOutputStream(file, "w")?.use { inp.copyTo(it) }
+                val out = ctx.contentResolver.openOutputStream(file, "w")
+                    ?: throw IllegalStateException("Cannot write $name")
+                out.use { inp.copyTo(it) }
                 // The folder may have renamed the file (for example "img (1).jpg"); link the real name.
                 return "$ATTACH/" + (displayName(file) ?: name)
             }
@@ -481,13 +500,23 @@ class NoteStore(private val ctx: Context) {
     fun openAttachment(path: String): InputStream? {
         val name = path.substringAfterLast('/')
         if (name.isBlank() || name.contains("..")) return null
+        // Markdown writes spaces and other characters encoded ("My%20photo.jpg"); try the real name too.
+        val decoded = try {
+            Uri.decode(name)
+        } catch (e: Exception) {
+            name
+        }.takeIf { it.isNotBlank() && !it.contains('/') && !it.contains("..") } ?: name
         val tree = treeUri
         if (tree == null) {
-            val f = File(File(localDir, ATTACH), name)
-            return if (f.exists()) f.inputStream() else null
+            val dir = File(localDir, ATTACH)
+            val f = File(dir, name).takeIf { it.isFile } ?: File(dir, decoded)
+            return if (f.isFile) f.inputStream() else null
         }
         val dirId = folderDocId(tree, ATTACH, create = false) ?: return null
-        val doc = children(tree, dirId).firstOrNull { !it.isDir && it.name == name } ?: return null
+        val files = children(tree, dirId)
+        val doc = files.firstOrNull { !it.isDir && it.name == name }
+            ?: files.firstOrNull { !it.isDir && it.name == decoded }
+            ?: return null
         return ctx.contentResolver.openInputStream(
             DocumentsContract.buildDocumentUriUsingTree(tree, doc.id)
         )
@@ -495,7 +524,7 @@ class NoteStore(private val ctx: Context) {
 
     // ---------- Folder helpers ----------
 
-    private class Entry(val id: String, val name: String, val isDir: Boolean, val modified: Long)
+    private class Entry(val id: String, val name: String, val isDir: Boolean, val modified: Long, val size: Long)
 
     private fun children(tree: Uri, parentId: String): List<Entry> {
         val uri = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId)
@@ -503,7 +532,8 @@ class NoteStore(private val ctx: Context) {
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
             DocumentsContract.Document.COLUMN_MIME_TYPE,
-            DocumentsContract.Document.COLUMN_LAST_MODIFIED
+            DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+            DocumentsContract.Document.COLUMN_SIZE
         )
         val out = ArrayList<Entry>()
         val cursor = ctx.contentResolver.query(uri, projection, null, null, null) ?: return out
@@ -514,7 +544,8 @@ class NoteStore(private val ctx: Context) {
                         cursor.getString(0),
                         cursor.getString(1) ?: "",
                         cursor.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR,
-                        cursor.getLong(3)
+                        cursor.getLong(3),
+                        if (cursor.isNull(4)) -1L else cursor.getLong(4)
                     )
                 )
             }
@@ -584,20 +615,27 @@ class NoteStore(private val ctx: Context) {
     }
 
     /** Reads a note only when it changed since the last listing; one broken file never hides the others. */
-    private fun load(id: String, name: String, modified: Long, folder: String, out: MutableList<Note>, text: () -> String) {
+    private fun load(
+        id: String, name: String, modified: Long, size: Long, folder: String,
+        out: MutableList<Note>, text: () -> String
+    ) {
+        // The size is checked too: sync tools copy the time of the other phone, and some
+        // storage keeps times to the second only, so a changed note can keep its old time.
         val cached = synchronized(cache) { cache[id] }
-        if (cached != null && modified > 0 && cached.first == modified &&
-            cached.second.folder == folder && cached.second.fileName == name
+        if (cached != null && modified > 0 && cached.time == modified && cached.size == size &&
+            cached.note.folder == folder && cached.note.fileName == name
         ) {
-            out.add(cached.second)
+            out.add(cached.note)
             return
         }
         try {
             val note = toNote(id, name, text(), modified, folder)
-            synchronized(cache) { cache[id] = modified to note }
+            synchronized(cache) { cache[id] = Cached(modified, size, note) }
             out.add(note)
         } catch (e: Exception) {
             // Skip a file that cannot be read right now; it shows up again on the next refresh.
+        } catch (e: OutOfMemoryError) {
+            // A huge file put in the folder by another app must not crash every start of the note list.
         }
     }
 
@@ -626,7 +664,9 @@ class NoteStore(private val ctx: Context) {
         private const val HIDDEN = ".omninote"
         const val TRASH = ".trash"
         private const val MAX_DEPTH = 8
-        private val cache = HashMap<String, Pair<Long, Note>>()
+        private class Cached(val time: Long, val size: Long, val note: Note)
+
+        private val cache = HashMap<String, Cached>()
 
         /** Markdown notes; macOS "._" helper files are skipped (temporary ".tmp" files never end in .md). */
         fun isMd(name: String): Boolean = name.lowercase().endsWith(MD) && !name.startsWith("._")
@@ -651,7 +691,7 @@ class NoteStore(private val ctx: Context) {
 
         /** Splits "# Title" on the first line from the rest of the note. */
         fun split(text: String): Pair<String, String> {
-            val normalized = text.replace("\r\n", "\n")
+            val normalized = text.removePrefix("\uFEFF").replace("\r\n", "\n")
             val firstLine = normalized.substringBefore('\n').trim()
             return if (firstLine.startsWith("# ")) {
                 val body = if (normalized.contains('\n')) {
@@ -665,6 +705,13 @@ class NoteStore(private val ctx: Context) {
             }
         }
 
+        /** The first characters of a text, without cutting an emoji or other two-part character in half. */
+        private fun safeTake(text: String, max: Int): String {
+            if (text.length <= max) return text
+            val end = if (Character.isHighSurrogate(text[max - 1])) max - 1 else max
+            return text.substring(0, end)
+        }
+
         fun join(title: String, body: String): String =
             if (title.isBlank()) body else "# ${title.trim()}\n\n$body"
 
@@ -673,7 +720,7 @@ class NoteStore(private val ctx: Context) {
                 .replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), " ")
                 .trim()
                 .trimStart('.', ' ')
-                .take(60)
+                .let { safeTake(it, 60) }
                 .trim()
             val base = clean.ifBlank {
                 "Note " + SimpleDateFormat("yyyy-MM-dd HHmmss", Locale.US).format(Date())

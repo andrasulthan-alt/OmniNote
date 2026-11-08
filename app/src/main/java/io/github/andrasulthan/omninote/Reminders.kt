@@ -104,6 +104,9 @@ object Reminders {
     fun showReminder(ctx: Context, id: String, title: String, text: String): Boolean {
         if (!canNotify(ctx) || !manager(ctx).areNotificationsEnabled()) return false
         ensureChannels(ctx)
+        // A reminder channel turned off in the phone settings shows nothing; keep the reminder then.
+        val channel = manager(ctx).getNotificationChannel(CHANNEL_REMIND)
+        if (channel != null && channel.importance == NotificationManager.IMPORTANCE_NONE) return false
         val builder = Notification.Builder(ctx, CHANNEL_REMIND)
             .setSmallIcon(android.R.drawable.ic_popup_reminder)
             .setContentTitle(title)
@@ -183,19 +186,24 @@ object Reminders {
         val now = System.currentTimeMillis()
         val pinned = pinnedIds(ctx)
         for (note in notes) {
-            val title = if (note.meta.vault) ctx.getString(R.string.locked_note) else note.title
-            // Future reminders are set again; ones missed while the phone was off ring right away.
-            if (note.meta.remind > now) {
-                schedule(ctx, note.id, title, note.meta.remind)
-            } else if (note.meta.remind > now - DAY && !note.meta.vault) {
-                schedule(ctx, note.id, title, now + 5_000)
-            }
-            if (note.id in pinned) {
-                if (note.meta.vault) {
-                    unpinNotification(ctx, note.id)
-                } else {
-                    pinNotification(ctx, note.id, note.title, Markdown.plain(note.preview))
+            // One note that cannot be set (for example the alarm limit some phones have) must not stop the rest.
+            try {
+                val title = if (note.meta.vault) ctx.getString(R.string.locked_note) else note.title
+                // Future reminders are set again; ones missed while the phone was off ring right away.
+                if (note.meta.remind > now) {
+                    schedule(ctx, note.id, title, note.meta.remind)
+                } else if (note.meta.remind > now - DAY) {
+                    schedule(ctx, note.id, title, now + 5_000)
                 }
+                if (note.id in pinned) {
+                    if (note.meta.vault) {
+                        unpinNotification(ctx, note.id)
+                    } else {
+                        pinNotification(ctx, note.id, note.title, Markdown.plain(note.preview))
+                    }
+                }
+            } catch (e: Exception) {
+                // Try the next note.
             }
         }
     }
@@ -233,7 +241,8 @@ class ReminderReceiver : BroadcastReceiver() {
                 }
                 val shown = Reminders.showReminder(context, id, shownTitle, text)
                 // Keep the reminder in the note when it could not be shown, so it is not lost.
-                if (shown && !isLocked) {
+                // Locked notes keep their reminder time readable outside the encrypted text, so it is cleared too.
+                if (shown && raw.isNotEmpty()) {
                     try {
                         store.updateMeta(id) { it.copy(remind = 0L) }
                     } catch (e: Exception) {
@@ -249,8 +258,15 @@ class ReminderReceiver : BroadcastReceiver() {
 
 /** Puts reminders and pinned notes back after the phone restarts or the app updates. */
 class BootReceiver : BroadcastReceiver() {
+    private companion object {
+        /** Sent instead of BOOT_COMPLETED after a fast restart on some Huawei and HTC phones. */
+        const val QUICK_BOOT = "android.intent.action.QUICKBOOT_POWERON"
+    }
+
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
+        if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED &&
+            intent.action != QUICK_BOOT
+        ) return
         val pending = goAsync()
         Thread {
             try {

@@ -19,7 +19,9 @@ data class NoteMeta(
     val trashedFrom: String? = null,
     val remind: Long = 0L,
     val vault: Boolean = false,
-    val extra: List<String> = emptyList()
+    val extra: List<String> = emptyList(),
+    /** Original "created" and "remind" lines, written back unchanged while their time is unchanged. */
+    val original: Map<String, String> = emptyMap()
 ) {
     companion object {
         private val CLOSING_FENCE = Regex("\n---[ \t]*(?=\n|$)")
@@ -41,13 +43,15 @@ data class NoteMeta(
 
         /** Splits a file into its properties and the Markdown content after them. */
         fun parse(text: String): Pair<NoteMeta, String> {
-            val t = text.replace("\r\n", "\n")
-            if (!t.startsWith("---\n")) return NoteMeta() to t
+            // A byte order mark (common in files from Windows editors) would hide the properties and the title.
+            val t = text.removePrefix("\uFEFF").replace("\r\n", "\n")
+            val firstBreak = t.indexOf('\n')
+            if (firstBreak < 0 || t.substring(0, firstBreak).trimEnd() != "---") return NoteMeta() to t
             // The closing fence must be a whole "---" line; an empty block ("---\n---") is allowed.
-            val fence = CLOSING_FENCE.find(t, 3) ?: return NoteMeta() to t
+            val fence = CLOSING_FENCE.find(t, firstBreak) ?: return NoteMeta() to t
             val end = fence.range.first
             val afterFence = (fence.range.last + 1).let { if (it < t.length && t[it] == '\n') it + 1 else it }
-            val block = if (end > 4) t.substring(4, end) else ""
+            val block = if (end > firstBreak + 1) t.substring(firstBreak + 1, end) else ""
 
             var pinned = false
             var archived = false
@@ -58,6 +62,7 @@ data class NoteMeta(
             var remind = 0L
             var vault = false
             val extra = ArrayList<String>()
+            val original = HashMap<String, String>()
             var inTags = false
 
             for (line in block.split("\n")) {
@@ -70,7 +75,10 @@ data class NoteMeta(
                     inTags = false
                 }
                 val colon = line.indexOf(':')
-                val key = if (colon > 0) line.substring(0, colon).trim().lowercase() else ""
+                // Indented lines belong to another property (like "color:" inside a nested block);
+                // they are kept exactly as they are instead of being read as OmniNote's own properties.
+                val nested = line.isNotEmpty() && line[0].isWhitespace()
+                val key = if (colon > 0 && !nested) line.substring(0, colon).trim().lowercase() else ""
                 val value = if (colon > 0) line.substring(colon + 1).trim() else ""
                 when (key) {
                     "pinned" -> pinned = isTrue(value)
@@ -80,12 +88,12 @@ data class NoteMeta(
                     "created" -> {
                         created = parseTime(unquote(value))
                         // Keep a date this app cannot read exactly as it was, instead of dropping it.
-                        if (created == 0L && value.isNotBlank()) extra.add(line)
+                        if (created == 0L && value.isNotBlank()) extra.add(line) else original[key] = line
                     }
                     "trashed_from" -> trashedFrom = unquote(value).ifBlank { null }
                     "remind" -> {
                         remind = parseTime(unquote(value))
-                        if (remind == 0L && value.isNotBlank()) extra.add(line)
+                        if (remind == 0L && value.isNotBlank()) extra.add(line) else original[key] = line
                     }
                     "vault" -> vault = value.equals("true", ignoreCase = true)
                     else -> if (line.isNotBlank()) extra.add(line)
@@ -100,7 +108,8 @@ data class NoteMeta(
                 trashedFrom = trashedFrom,
                 remind = remind,
                 vault = vault,
-                extra = extra
+                extra = extra,
+                original = original
             )
             return meta to t.substring(afterFence)
         }
@@ -109,17 +118,26 @@ data class NoteMeta(
         fun build(meta: NoteMeta, content: String): String {
             val lines = ArrayList<String>()
             if (meta.vault) lines.add("vault: true")
-            if (meta.created > 0) lines.add("created: " + formatTime(meta.created))
+            // "created: 2026-10-01" stays as written (rewriting it in UTC could show the day before in other apps).
+            if (meta.created > 0) lines.add(kept(meta, "created", meta.created) ?: "created: " + formatTime(meta.created))
             if (meta.pinned) lines.add("pinned: true")
             if (meta.archived) lines.add("archived: true")
             meta.color?.let { lines.add("color: $it") }
             if (meta.tags.isNotEmpty()) lines.add("tags: [" + meta.tags.joinToString(", ") + "]")
-            if (meta.remind > 0) lines.add("remind: " + formatTime(meta.remind))
+            if (meta.remind > 0) lines.add(kept(meta, "remind", meta.remind) ?: "remind: " + formatTime(meta.remind))
             meta.trashedFrom?.let { lines.add("trashed_from: \"$it\"") }
-            lines.addAll(meta.extra)
+            // An unreadable "created:"/"remind:" line kept in extra must not shadow a value written above.
+            lines.addAll(meta.extra.filterNot { line ->
+                // Only top-level lines; an indented "created:" belongs to another key and stays.
+                val key = if (line.firstOrNull()?.isWhitespace() == true) "" else line.substringBefore(':').trim().lowercase()
+                (key == "created" && meta.created > 0) || (key == "remind" && meta.remind > 0)
+            })
             if (lines.isEmpty()) return content
             return "---\n" + lines.joinToString("\n") + "\n---\n" + content
         }
+
+        private fun kept(meta: NoteMeta, key: String, millis: Long): String? =
+            meta.original[key]?.takeIf { parseTime(unquote(it.substringAfter(':'))) == millis }
 
         fun splitList(value: String): List<String> =
             value.trim().removePrefix("[").removeSuffix("]")

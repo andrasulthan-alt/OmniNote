@@ -4,8 +4,10 @@ import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.util.TypedValue
 import android.view.View
+import android.view.WindowInsets
 import android.widget.TextView
 
 /**
@@ -86,12 +88,21 @@ object Ui {
         val r = root.paddingRight
         val b = root.paddingBottom
         root.setOnApplyWindowInsetsListener { v, insets ->
-            v.setPadding(
-                l + insets.systemWindowInsetLeft,
-                t + insets.systemWindowInsetTop,
-                r + insets.systemWindowInsetRight,
-                b + insets.systemWindowInsetBottom
-            )
+            if (Build.VERSION.SDK_INT >= 35) {
+                // Android 15 always draws apps edge to edge: ask for every inset that can cover the
+                // screen, including the camera cutout in landscape and the keyboard.
+                val all = insets.getInsets(
+                    WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or WindowInsets.Type.ime()
+                )
+                v.setPadding(l + all.left, t + all.top, r + all.right, b + all.bottom)
+            } else {
+                v.setPadding(
+                    l + insets.systemWindowInsetLeft,
+                    t + insets.systemWindowInsetTop,
+                    r + insets.systemWindowInsetRight,
+                    b + insets.systemWindowInsetBottom
+                )
+            }
             insets
         }
     }

@@ -79,11 +79,12 @@ class TasksActivity : Activity() {
             clipToPadding = false
             setPadding(0, Ui.dp(context, 8f), 0, Ui.dp(context, 40f))
             adapter = tasksAdapter
+            // A tap that lands while the list is being replaced can point past its end.
             onItemClickListener = AdapterView.OnItemClickListener { _, _, position, _ ->
-                toggle(tasksAdapter.getItem(position))
+                tasksAdapter.items.getOrNull(position)?.let { toggle(it) }
             }
             onItemLongClickListener = AdapterView.OnItemLongClickListener { _, _, position, _ ->
-                openNote(tasksAdapter.getItem(position))
+                tasksAdapter.items.getOrNull(position)?.let { openNote(it) }
                 true
             }
         }
@@ -127,8 +128,11 @@ class TasksActivity : Activity() {
                     } catch (e: Exception) {
                         continue
                     }.replace("\r\n", "\n").split("\n")
+                    // Checkboxes inside code blocks are examples, not tasks (the editor shows them as code).
+                    var inCode = false
                     lines.forEachIndexed { index, line ->
-                        val m = TASK.find(line)
+                        if (FENCE.containsMatchIn(line)) inCode = !inCode
+                        val m = if (inCode) null else TASK.find(line)
                         if (m != null && m.groupValues[4].isNotBlank()) {
                             tasks.add(
                                 Task(
@@ -158,13 +162,17 @@ class TasksActivity : Activity() {
     private fun toggle(task: Task) {
         io.execute {
             try {
-                val lines = store.read(task.noteId).replace("\r\n", "\n").split("\n").toMutableList()
+                val previous = store.read(task.noteId)
+                val lines = previous.replace("\r\n", "\n").split("\n").toMutableList()
                 val line = lines.getOrNull(task.line)
                 val m = if (line == task.raw) TASK.find(line) else null
                 if (m != null) {
                     val flipped = if (m.groupValues[2] == " ") "x" else " "
                     lines[task.line] = m.groupValues[1] + flipped + m.groupValues[3] + m.groupValues[4]
+                    // Keep the version history and the note widgets in step, as a save in the editor does.
+                    History.record(this, History.keyFor(task.noteId, NoteMeta.parse(previous).first), previous)
                     store.save(task.noteId, "", lines.joinToString("\n"))
+                    Widgets.refreshNotes(this)
                 }
             } catch (e: Exception) {
                 runOnUiThread { Toast.makeText(this, R.string.error_save, Toast.LENGTH_SHORT).show() }
@@ -232,5 +240,6 @@ class TasksActivity : Activity() {
 
     companion object {
         private val TASK = Regex("^(\\s*[-*+]\\s\\[)([ xX])(]\\s)(.*)$")
+        private val FENCE = Regex("^\\s*```")
     }
 }

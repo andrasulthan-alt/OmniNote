@@ -2,11 +2,21 @@ package io.github.andrasulthan.omninote
 
 import android.app.Activity
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.os.Bundle
+import android.os.CancellationSignal
+import android.os.ParcelFileDescriptor
+import android.print.PageRange
+import android.print.PrintDocumentAdapter
 import android.print.PrintAttributes
 import android.print.PrintManager
 import android.util.Base64
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import java.io.ByteArrayOutputStream
 
 /** Turns a note into a self-contained web page, and prints it to PDF. */
 object HtmlExport {
@@ -19,6 +29,7 @@ object HtmlExport {
     private val IMAGE = Regex("!\\[([^\\]]*)\\]\\(([^)\\s]+)\\)")
     private val LINK = Regex("\\[([^\\]]+)\\]\\(([^)\\s]+)\\)")
     private val WIKI = Regex("\\[\\[([^\\]]+)\\]\\]")
+    private val EMBED = Regex("!\\[\\[([^\\]|]+\\.(?:png|jpe?g|gif|webp|bmp))(?:\\|[^\\]]*)?\\]\\]", RegexOption.IGNORE_CASE)
     private val CODE = Regex("`([^`]+)`")
     private val CODE_MARK = Regex("\u0000(\\d+)\u0000")
     private val BOLD = Regex("\\*\\*(.+?)\\*\\*")
@@ -88,13 +99,39 @@ object HtmlExport {
                     .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
                     .build()
                 try {
-                    manager.print(jobName, view.createPrintDocumentAdapter(jobName), attributes)
+                    manager.print(jobName, Releasing(view.createPrintDocumentAdapter(jobName), view), attributes)
                 } catch (e: Exception) {
                     android.widget.Toast.makeText(activity, R.string.export_failed, android.widget.Toast.LENGTH_SHORT).show()
                 }
             }
         }
         web.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+    }
+
+    /**
+     * Passes everything to the WebView's own adapter and lets go of the WebView when printing ends,
+     * so the closed note screen is not kept in memory until the next print.
+     */
+    private class Releasing(private val inner: PrintDocumentAdapter, private val web: WebView) : PrintDocumentAdapter() {
+        override fun onStart() = inner.onStart()
+
+        override fun onLayout(
+            oldAttributes: PrintAttributes?, newAttributes: PrintAttributes?,
+            cancellationSignal: CancellationSignal?, callback: LayoutResultCallback?, extras: Bundle?
+        ) = inner.onLayout(oldAttributes, newAttributes, cancellationSignal, callback, extras)
+
+        override fun onWrite(
+            pages: Array<out PageRange>?, destination: ParcelFileDescriptor?,
+            cancellationSignal: CancellationSignal?, callback: WriteResultCallback?
+        ) = inner.onWrite(pages, destination, cancellationSignal, callback)
+
+        override fun onFinish() {
+            inner.onFinish()
+            if (printing === web) {
+                printing = null
+                web.post { web.destroy() }
+            }
+        }
     }
 
     private fun bodyHtml(body: String, store: NoteStore): String {
@@ -201,8 +238,14 @@ object HtmlExport {
             "\u0000" + (codes.size - 1) + "\u0000"
         }
         s = esc(s)
-        s = IMAGE.replace(s) { m -> image(m.groupValues[2], m.groupValues[1], store) }
-        s = WIKI.replace(s) { m -> "<span class=\"wiki\">" + m.groupValues[1] + "</span>" }
+        s = IMAGE.replace(s) { m -> image(unesc(m.groupValues[2]), m.groupValues[1], store) }
+        s = EMBED.replace(s) { m -> image(unesc(m.groupValues[1].trim()), "", store) }
+        s = WIKI.replace(s) { m ->
+            // [[Note|shown text]] shows only the text, like in the read view.
+            val inner = m.groupValues[1]
+            val label = inner.substringAfter('|', "").trim().ifEmpty { inner.substringBefore('|').trim() }
+            "<span class=\"wiki\">" + label.ifEmpty { inner } + "</span>"
+        }
         s = LINK.replace(s) { m ->
             val target = m.groupValues[2].trim()
             val safe = SAFE_LINK.containsMatchIn(target) || !target.contains(":")
@@ -217,22 +260,73 @@ object HtmlExport {
 
     private fun image(path: String, alt: String, store: NoteStore): String {
         if (path.startsWith("http://") || path.startsWith("https://")) {
-            return "<img src=\"$path\" alt=\"$alt\">"
+            return "<img src=\"" + esc(path) + "\" alt=\"$alt\">"
         }
-        val bytes = try {
+        var bytes = try {
             store.openAttachment(path)?.use { it.readBytes() }
         } catch (e: Exception) {
             null
+        } catch (e: OutOfMemoryError) {
+            null
         } ?: return alt
-        val mime = when (path.substringAfterLast('.').lowercase()) {
+        var mime = when (path.substringAfterLast('.').lowercase()) {
             "png" -> "image/png"
             "gif" -> "image/gif"
             "webp" -> "image/webp"
             else -> "image/jpeg"
         }
+        // Camera photos are several megabytes each; embedded as they are, a few of them made the
+        // page too big for the memory of older phones. Large pictures are made smaller first.
+        if (bytes.size > MAX_EMBED_BYTES && mime != "image/gif") {
+            shrink(bytes)?.let {
+                bytes = it
+                mime = "image/jpeg"
+            }
+        }
         return "<img src=\"data:" + mime + ";base64," + Base64.encodeToString(bytes, Base64.NO_WRAP) +
             "\" alt=\"" + alt + "\">"
     }
+
+    private const val MAX_EMBED_BYTES = 1_500_000
+    private const val MAX_EMBED_SIDE = 1600
+
+    /** A smaller JPEG copy of a large picture, or null when it cannot be made. */
+    private fun shrink(bytes: ByteArray): ByteArray? = try {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= MAX_EMBED_SIDE || bounds.outHeight / (sample * 2) >= MAX_EMBED_SIDE) {
+            sample *= 2
+        }
+        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
+        if (bitmap == null) {
+            null
+        } else {
+            val out = ByteArrayOutputStream()
+            // JPEG has no transparency: paint transparent parts white, like the page.
+            val flat = if (bitmap.hasAlpha()) {
+                Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888).also { copy ->
+                    Canvas(copy).apply {
+                        drawColor(Color.WHITE)
+                        drawBitmap(bitmap, 0f, 0f, null)
+                    }
+                    bitmap.recycle()
+                }
+            } else {
+                bitmap
+            }
+            flat.compress(Bitmap.CompressFormat.JPEG, 85, out)
+            flat.recycle()
+            out.toByteArray().takeIf { it.isNotEmpty() && it.size < bytes.size }
+        }
+    } catch (e: Exception) {
+        null
+    } catch (e: OutOfMemoryError) {
+        null
+    }
+
+    private fun unesc(s: String): String =
+        s.replace("&quot;", "\"").replace("&gt;", ">").replace("&lt;", "<").replace("&amp;", "&")
 
     private fun esc(s: String): String =
         s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")

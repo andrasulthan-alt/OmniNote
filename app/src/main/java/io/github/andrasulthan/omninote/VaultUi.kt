@@ -85,7 +85,8 @@ object VaultUi {
                             } catch (e: Vault.ExistsException) {
                                 exists = true
                                 false
-                            } catch (e: Exception) {
+                            } catch (e: Throwable) {
+                                // Also out of memory on old phones: report it instead of crashing the app.
                                 false
                             }
                             activity.runOnUiThread {
@@ -143,9 +144,12 @@ object VaultUi {
                 ok.isEnabled = false
                 ok.text = activity.getString(R.string.vault_working)
                 Thread {
+                    var failed = false
                     val success = try {
                         Vault.open(store, password)
-                    } catch (e: Exception) {
+                    } catch (e: Throwable) {
+                        // A read error or out of memory is not a wrong password, and must not crash the app.
+                        failed = true
                         false
                     }
                     activity.runOnUiThread {
@@ -156,8 +160,12 @@ object VaultUi {
                         } else {
                             ok.isEnabled = true
                             ok.text = activity.getString(R.string.vault_open)
-                            field.setText("")
-                            Toast.makeText(activity, R.string.vault_wrong, Toast.LENGTH_SHORT).show()
+                            if (failed) {
+                                Toast.makeText(activity, R.string.vault_error, Toast.LENGTH_LONG).show()
+                            } else {
+                                field.setText("")
+                                Toast.makeText(activity, R.string.vault_wrong, Toast.LENGTH_SHORT).show()
+                            }
                         }
                     }
                 }.start()
