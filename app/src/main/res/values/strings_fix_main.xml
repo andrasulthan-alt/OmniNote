@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Note widget -->
+    <string name="fix_widget_choose">Tap to choose a note for this widget.</string>
+    <string name="fix_widget_missing">This note was moved or deleted. Tap to choose another note.</string>
+
+    <!-- Home screen when the notes folder cannot be read -->
+    <string name="fix_folder_retry">The folder may have been moved, or access to it was lost.\nTap here to choose the notes folder again.</string>
+</resources>

@@ -6,7 +6,8 @@
         <item name="android:textColorPrimary">#000000</item>
         <item name="android:colorAccent">#D71921</item>
         <item name="android:statusBarColor">#F2F2F2</item>
-        <item name="android:navigationBarColor">#F2F2F2</item>
+        <!-- Android 8.0 cannot show dark navigation buttons, so a light bar would hide them. -->
+        <item name="android:navigationBarColor">#000000</item>
         <item name="android:windowLightStatusBar">true</item>
     </style>
 </resources>
